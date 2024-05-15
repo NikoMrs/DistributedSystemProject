@@ -24,9 +24,18 @@ public class QuorumBasedTotalOrder {
   final static int QUORUM = (N_PARTICIPANTS/2) + 1;
 
 	public static class Update{
-		public int epoch;
-		public int id;
+		public int e;
+		public int i;
+		public int v;
+
+		public Update(int e, int i, int v){
+			this.e = e;
+			this.i = i;
+			this.v = v;
+		}
 	}
+
+	public enum Operation {READ, WRITE}
 
 	// Timeouts Configuration
   final static int WRITEOK_TIMEOUT = 3000;      					// timeout started after receiving the update msg. Detects a coordinator crash
@@ -42,131 +51,149 @@ public class QuorumBasedTotalOrder {
     }
   }
 
-	public static class UpdateRequest implements Serializable {				// Sended from the coordinator to all replicas. Initiate an update
-		public final Update new_update = null;
+	public static class IssueWrite implements Serializable {		// Sent from a client to a replica. Asks for a Write operation
+		public int value;
+		IssueWrite(int value){ this.value = value; };
 	}
 
-	public static class UpdateResponse implements Serializable {}			// Sended from a replica to the coordinator. ACK for the UpdateRequest
+	public static class IssueRead implements Serializable {}		// Sent from a client to a replica. Asks for a Read operation
 
-	public static class WriteOkRequest implements Serializable {}			// Sended from the coordinator to all replicas. Complete the update, modifying the value v
+	public static class ForwardUpdate implements Serializable {				// Sent from a replica to the coordinator. Forward an update request
+		public final Update update ;
+		ForwardUpdate(int e, int i, int value){
+			this.update = new Update(e, i, value);
+		};
+	}
 
-	public static class ElectionRequest implements Serializable {			// Sended from a replica to its successor. Initiate a coordinator election
+	public static class UpdateRequest implements Serializable {				// Sent from the coordinator to all replicas. Initiate the update protocol
+		public final Update update ;
+		UpdateRequest(Update update){ this.update = update; };
+	}
+
+	public static class UpdateResponse implements Serializable {}			// Sent from a replica to the coordinator. ACK for the UpdateRequest
+
+	public static class WriteOkRequest implements Serializable {}			// Sent from the coordinator to all replicas. Complete the update, modifying the value v
+
+	public static class ElectionRequest implements Serializable {			// Sent from a replica to its successor. Initiate a coordinator election
 		// TODO: Aggiungere gli update noti da ogni nodo
 	}
 
-	public static class ElectionResponse implements Serializable {}		// Sended from a replica to its predecessor. ACK for the ElectionRequest
+	public static class ElectionResponse implements Serializable {}		// Sent from a replica to its predecessor. ACK for the ElectionRequest
 
-  public static class SynchronizationRequest implements Serializable {}		// Sended to the most updated replica to every other replica. Completes the election, updating the old replicas' v
+  public static class SynchronizationRequest implements Serializable {}		// Sent to the most updated replica to every other replica. Completes the election, updating the old replicas' v
+
+	public static class HeartbeatMessage implements Serializable {}		// Sent periodically from the coordinator to all replicas.
 
   public static class Timeout implements Serializable {}
 
-	
 
-  // /*-- Common functionality for both Coordinator and Participants ------------*/
+   /*-- Common functionality for both Coordinator and Replicas ------------*/
 
-  // public abstract static class Node extends AbstractActor {
-  //   protected int id;                           // node ID
-  //   protected List<ActorRef> participants;      // list of participant nodes
-  //   protected Decision decision = null;         // decision taken by this node
+	public abstract static class Node extends AbstractActor {
+	  protected int id;                           // node ID
+	  protected List<ActorRef> participants;      // list of participant nodes
+	  protected int v;         // decision taken by this node
+		protected ArrayList<Update> pendingUpdates;
+		protected ArrayList<Update> completedUpdates;
+		protected int coordinatorId;
 
-  //   public Node(int id) {
-  //     super();
-  //     this.id = id;
-  //   }
+	  public Node(int id) {
+		  super();
+		  this.id = id;
+	  }
 
-  //   // abstract method to be implemented in extending classes
-  //   protected abstract void onRecovery(Recovery msg);
+	  void setGroup(StartMessage sm) {
+		  participants = new ArrayList<>();
+		  for (ActorRef b: sm.group) {
+			  if (!b.equals(getSelf())) {
+					// copying all participant refs except for self
+				  this.participants.add(b);
+			 	}
+		 	}
+		 	print("starting with " + sm.group.size() + " peer(s)");
+	 	}
 
-  //   void setGroup(StartMessage sm) {
-  //     participants = new ArrayList<>();
-  //     for (ActorRef b: sm.group) {
-  //       if (!b.equals(getSelf())) {
+	  // emulate a crash and a recovery in a given time
+	  void crash(int recoverIn) {
+		  getContext().become(crashed());
+		  print("CRASH!!!");
+	  }
 
-  //         // copying all participant refs except for self
-  //         this.participants.add(b);
-  //       }
-  //     }
-  //     print("starting with " + sm.group.size() + " peer(s)");
-  //   }
+	  // emulate a delay of d milliseconds
+	  void delay(int d) {
+		  try {Thread.sleep(d);} catch (Exception ignored) {}
+	  }
 
-  //   // emulate a crash and a recovery in a given time
-  //   void crash(int recoverIn) {
-  //     getContext().become(crashed());
-  //     print("CRASH!!!");
+	  void multicast(Serializable m) {
+	 	 for (ActorRef p: participants)
+	 		 p.tell(m, getSelf());
+	  }
 
-  //     // setting a timer to "recover"
-  //     getContext().system().scheduler().scheduleOnce(
-  //         Duration.create(recoverIn, TimeUnit.MILLISECONDS),  
-  //         getSelf(),
-  //         new Recovery(), // message sent to myself
-  //         getContext().system().dispatcher(), getSelf()
-  //         );
-  //   }
+	  // a multicast implementation that crashes after sending the first message
+	  void multicastAndCrash(Serializable m, int recoverIn) {
+		  for (ActorRef p: participants) {
+		 	  p.tell(m, getSelf());
+		 	  crash(recoverIn); return;
+		  }
+	  }
 
-  //   // emulate a delay of d milliseconds
-  //   void delay(int d) {
-  //     try {Thread.sleep(d);} catch (Exception ignored) {}
-  //   }
+	  // schedule a Timeout message in specified time
+	  void setTimeout(int time) {
+			getContext().system().scheduler().scheduleOnce(
+					Duration.create(time, TimeUnit.MILLISECONDS),
+					getSelf(),
+					new Timeout(), // the message to send
+					getContext().system().dispatcher(), getSelf()
+			);
+		}
 
-  //   void multicast(Serializable m) {
-  //     for (ActorRef p: participants)
-  //       p.tell(m, getSelf());
-  //   }
+		void handleWrite(int value){
+			if(coordinatorId == this.id){
+				// TODO: Procedere con l'update protocol:
+				// Opzione 1: Aggiorno pendingUpdates e invio un UpdateRequest alle replicas
+				// Opzione 2: Invio a tutti (me compreso) l'UpdateRequest
+			}
+			else{
+				// TODO: Invio un issue al coordinator
+			}
+		}
 
-  //   // a multicast implementation that crashes after sending the first message
-  //   void multicastAndCrash(Serializable m, int recoverIn) {
-  //     for (ActorRef p: participants) {
-  //       p.tell(m, getSelf());
-  //       crash(recoverIn); return;
-  //     }
-  //   }
+		void handleRead(){
+			getSender().tell(v, getSelf());
+		}
 
-  //   // schedule a Timeout message in specified time
-  //   void setTimeout(int time) {
-  //     getContext().system().scheduler().scheduleOnce(
-  //         Duration.create(time, TimeUnit.MILLISECONDS),  
-  //         getSelf(),
-  //         new Timeout(), // the message to send
-  //         getContext().system().dispatcher(), getSelf()
-  //         );
-  //   }
+		// First step of the update protocol, adding a step to the history + sends ACK
+		void updateValue(Update update) {
+			pendingUpdates.add(update);
+			getSender().tell(new UpdateResponse(), getSelf());
+		}
 
-  //   // fix the final decision of the current node
-  //   void fixDecision(Decision d) {
-  //     if (!hasDecided()) {
-  //       this.decision = d;
-  //       print("decided " + d);
-  //     }
-  //   }
+	 	// Complete the update process, changing the value of our v + updating the history
+		void completeWrite() {
 
-  //   boolean hasDecided() { return decision != null; } // has the node decided?
+	  }
 
-  //   // a simple logging function
-  //   void print(String s) {
-  //     System.out.format("%2d: %s\n", id, s);
-  //   }
+	 // a simple logging function
+	 void print(String s) {
+		 System.out.format("%2d: %s\n", id, s);
+	 }
 
-  //   @Override
-  //   public Receive createReceive() {
+	 @Override
+	 public Receive createReceive() {
 
-  //     // Empty mapping: we'll define it in the inherited classes
-  //     return receiveBuilder().build();
-  //   }
+		 // Empty mapping: we'll define it in the inherited classes
+		 return receiveBuilder().build();
+	 }
 
-  //   public Receive crashed() {
-  //     return receiveBuilder()
-  //             .match(Recovery.class, this::onRecovery)
-  //             .matchAny(msg -> {})
-  //             .build();
-  //   }
+	 public Receive crashed() {
+		 return null;
+//				 receiveBuilder()
+//						 .match(Recovery.class, this::onRecovery)
+//						 .matchAny(msg -> {})
+//						 .build();
+	 }
 
-  //   public void onDecisionRequest(DecisionRequest msg) {  /* Decision Request */
-  //     if (hasDecided())
-  //       getSender().tell(new DecisionResponse(decision), getSelf());
-
-  //     // just ignoring if we don't know the decision
-  //   }
-  // }
+	}
 
   // /*-- Coordinator -----------------------------------------------------------*/
 
