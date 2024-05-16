@@ -89,13 +89,14 @@ public class QuorumBasedTotalOrder {
 
    /*-- Common functionality for both Coordinator and Replicas ------------*/
 
-	public abstract static class Node extends AbstractActor {
-	  protected int id;                           // node ID
-	  protected List<ActorRef> participants;      // list of participant nodes
-	  protected int v;         // decision taken by this node
-		protected ArrayList<Update> pendingUpdates;
-		protected ArrayList<Update> completedUpdates;
-		protected int coordinatorId;
+	public static class Node extends AbstractActor {
+	  protected int id;                             // node ID
+	  protected List<ActorRef> participants;        // list of participant nodes
+	  protected int v;                              // current v value
+		protected ArrayList<Update> pendingUpdates;   // updates not yet completed
+		protected ArrayList<Update> completedUpdates; // finalized updates
+		protected ActorRef coordinator;                  // current ID of the coordinator node
+    protected int e,i;                            // latest valid values for epoch and update ID
 
 	  public Node(int id) {
 		  super();
@@ -105,10 +106,7 @@ public class QuorumBasedTotalOrder {
 	  void setGroup(StartMessage sm) {
 		  participants = new ArrayList<>();
 		  for (ActorRef b: sm.group) {
-			  if (!b.equals(getSelf())) {
-					// copying all participant refs except for self
-				  this.participants.add(b);
-			 	}
+				this.participants.add(b);
 		 	}
 		 	print("starting with " + sm.group.size() + " peer(s)");
 	 	}
@@ -147,18 +145,21 @@ public class QuorumBasedTotalOrder {
 			);
 		}
 
-		void handleWrite(int value){
-			if(coordinatorId == this.id){
+		void onWrite(int value){
+			if(getSelf().equals(coordinator)){
 				// TODO: Procedere con l'update protocol:
 				// Opzione 1: Aggiorno pendingUpdates e invio un UpdateRequest alle replicas
 				// Opzione 2: Invio a tutti (me compreso) l'UpdateRequest
+        multicast(new UpdateRequest(new Update(e, i+1, value)));
+
 			}
 			else{
 				// TODO: Invio un issue al coordinator
+        coordinator.tell(new IssueWrite(value), getSender());
 			}
 		}
 
-		void handleRead(){
+		void onRead(){
 			getSender().tell(v, getSelf());
 		}
 
@@ -173,172 +174,44 @@ public class QuorumBasedTotalOrder {
 
 	  }
 
-	 // a simple logging function
-	 void print(String s) {
-		 System.out.format("%2d: %s\n", id, s);
-	 }
+	  // a simple logging function
+    void print(String s) {
+      System.out.format("%2d: %s\n", id, s);
+    }
 
-	 @Override
-	 public Receive createReceive() {
+	  @Override
+    public Receive createReceive() {
 
-		 // Empty mapping: we'll define it in the inherited classes
-		 return receiveBuilder().build();
-	 }
+      // Empty mapping: we'll define it in the inherited classes
+      return receiveBuilder().build();
+    }
 
-	 public Receive crashed() {
-		 return null;
-//				 receiveBuilder()
-//						 .match(Recovery.class, this::onRecovery)
-//						 .matchAny(msg -> {})
-//						 .build();
-	 }
+    public Receive crashed() {
+        return null;
+          //  receiveBuilder()
+          // 		 .match(Recovery.class, this::onRecovery)
+          // 		 .matchAny(msg -> {})
+          // 		 .build();
+    }
+
+    
+    // @Override
+    // public Receive createReceive() {
+    //   return receiveBuilder()
+    //   .match(Recovery.class, this::onRecovery)
+    //   .match(StartMessage.class, this::onStartMessage)
+    //   .match(VoteResponse.class, this::onVoteResponse)
+    //   .match(Timeout.class, this::onTimeout)
+    //   .match(DecisionRequest.class, this::onDecisionRequest)
+    //   .build();
+    // }
+
+    static public Props props(int id) {
+      return Props.create(Node.class, () -> new Node(id));
+    }
 
 	}
 
-  // /*-- Coordinator -----------------------------------------------------------*/
-
-  // public static class Coordinator extends Node {
-
-  //   // here all the nodes that sent YES are collected
-  //   private final Set<ActorRef> yesVoters = new HashSet<>();
-
-  //   boolean allVotedYes() { // returns true if all voted YES
-  //     return yesVoters.size() >= N_PARTICIPANTS;
-  //   }
-
-  //   public Coordinator() {
-  //     super(-1); // the coordinator has the id -1
-  //   }
-
-  //   static public Props props() {
-  //     return Props.create(Coordinator.class, Coordinator::new);
-  //   }
-
-  //   @Override
-  //   public Receive createReceive() {
-  //     return receiveBuilder()
-  //       .match(Recovery.class, this::onRecovery)
-  //       .match(StartMessage.class, this::onStartMessage)
-  //       .match(VoteResponse.class, this::onVoteResponse)
-  //       .match(Timeout.class, this::onTimeout)
-  //       .match(DecisionRequest.class, this::onDecisionRequest)
-  //       .build();
-  //   }
-
-  //   public void onStartMessage(StartMessage msg) {                   /* Start */
-  //     setGroup(msg);
-  //     print("Sending vote request");
-  //     multicast(new VoteRequest());
-  //     //multicastAndCrash(new VoteRequest(), 3000);
-  //     setTimeout(VOTE_TIMEOUT);
-  //     //crash(5000);
-  //   }
-
-  //   public void onVoteResponse(VoteResponse msg) {                    /* Vote */
-  //     if (hasDecided()) {
-
-  //       // we have already decided and sent the decision to the group, 
-  //       // so do not care about other votes
-  //       return;
-  //     }
-  //     Vote v = (msg).vote;
-  //     if (v == Vote.YES) {
-  //       yesVoters.add(getSender());
-  //       if (allVotedYes()) {
-  //         fixDecision(Decision.COMMIT);
-  //         //if (id==-1) {crash(3000); return;}
-  //         //multicast(new DecisionResponse(decision));
-  //         multicastAndCrash(new DecisionResponse(decision), 3000);
-  //       }
-  //     } 
-  //     else { // a NO vote
-
-  //       // on a single NO we decide ABORT
-  //       fixDecision(Decision.ABORT);
-  //       multicast(new DecisionResponse(decision));
-  //     }
-  //   }
-
-  //   public void onTimeout(Timeout msg) {
-  //     if (!hasDecided()) {
-  //       print("Timeout");
-
-  //       // TODO 1: coordinator timeout action
-  //     }
-  //   }
-
-  //   @Override
-  //   public void onRecovery(Recovery msg) {
-  //     getContext().become(createReceive());
-
-  //     // TODO 2: coordinator recovery action
-  //   }
-  // }
-
-  // /*-- Participant -----------------------------------------------------------*/
-  // public static class Participant extends Node {
-  //   ActorRef coordinator;
-  //   public Participant(int id) { super(id); }
-
-  //   static public Props props(int id) {
-  //     return Props.create(Participant.class, () -> new Participant(id));
-  //   }
-
-  //   @Override
-  //   public Receive createReceive() {
-  //     return receiveBuilder()
-  //       .match(StartMessage.class, this::onStartMessage)
-  //       .match(VoteRequest.class, this::onVoteRequest)
-  //       .match(DecisionRequest.class, this::onDecisionRequest)
-  //       .match(DecisionResponse.class, this::onDecisionResponse)
-  //       .match(Timeout.class, this::onTimeout)
-  //       .match(Recovery.class, this::onRecovery)
-  //       .build();
-  //   }
-
-  //   public void onStartMessage(StartMessage msg) {
-  //     setGroup(msg);
-  //   }
-
-  //   public void onVoteRequest(VoteRequest msg) {
-  //     this.coordinator = getSender();
-  //     //if (id==2) {crash(5000); return;}    // simulate a crash
-  //     //if (id==2) delay(4000);              // simulate a delay
-  //     if (predefinedVotes[this.id] == Vote.NO) {
-  //       fixDecision(Decision.ABORT);
-  //     }
-  //     print("sending vote " + predefinedVotes[this.id]);
-  //     this.coordinator.tell(new VoteResponse(predefinedVotes[this.id]), getSelf());
-  //     setTimeout(DECISION_TIMEOUT);
-  //   }
-
-  //   public void onTimeout(Timeout msg) {
-  //     if (!hasDecided()) {
-  //       print("Timeout. Asking around.");
-
-  //       // TODO 3: participant termination protocol
-  //     }
-  //   }
-
-  //   @Override
-  //   public void onRecovery(Recovery msg) {
-  //     getContext().become(createReceive());
-
-  //     // We don't handle explicitly the "not voted" case here
-  //     // (in any case, it does not break the protocol)
-  //     if (!hasDecided()) {
-  //       print("Recovery. Asking the coordinator.");
-  //       coordinator.tell(new DecisionRequest(), getSelf());
-  //       setTimeout(DECISION_TIMEOUT);
-  //     }
-  //   }
-
-  //   public void onDecisionResponse(DecisionResponse msg) { /* Decision Response */
-
-  //     // store the decision
-  //     fixDecision(msg.decision);
-  //   }
-  // }
 
   // /*-- Main ------------------------------------------------------------------*/
   // public static void main(String[] args) {
