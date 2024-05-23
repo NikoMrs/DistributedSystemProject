@@ -8,13 +8,15 @@ import scala.concurrent.duration.Duration;
 
 import java.io.Serializable;
 import java.util.concurrent.TimeUnit;
+import java.util.Objects;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Map;
 import java.lang.Thread;
 import java.util.Collections;
-
+import java.util.HashMap;
 import java.io.IOException;
 
 public class QuorumBasedTotalOrder {
@@ -23,17 +25,41 @@ public class QuorumBasedTotalOrder {
   final static int N_PARTICIPANTS = 3;
   final static int QUORUM = (N_PARTICIPANTS/2) + 1;
 
-	public static class Update{
-	public int e;
-	public int i;
-	public int v;
+	public static class UpdateIdentifier{
+		public int e;
+		public int i;
 
-	public Update(int e, int i, int v){
-		this.e = e;
-		this.i = i;
-		this.v = v;
+		public UpdateIdentifier(int e, int i){
+			this.e = e;
+			this.i = i;
+		}
+		
+		@Override
+		public int hashCode(){
+			return Objects.hash(e,i);
+		}
 	}
+
+	public static class Update{
+		UpdateIdentifier identifier;
+		public int v;
+
+		public Update(UpdateIdentifier identifier, int v){
+			this.identifier = identifier;
+			this.v = v;
+		}
 	}
+
+	public static class PendingUpdateTuple{
+		ArrayList<ActorRef> actors;
+		int value;
+
+		public PendingUpdateTuple(int value){
+			this.value = value;
+			actors = new ArrayList<>();
+		}
+	}
+	
 
 	public enum Operation {READ, WRITE}
 
@@ -59,25 +85,26 @@ public class QuorumBasedTotalOrder {
 	public static class IssueRead implements Serializable {}		// Sent from a client to a replica. Asks for a Read operation
 
 	public static class ForwardUpdate implements Serializable {				// Sent from a replica to the coordinator. Forward an update request
-		public final Update update ;
+		public final Update update;
 		ForwardUpdate(int e, int i, int value){
-			this.update = new Update(e, i, value);
+			UpdateIdentifier identifier = new UpdateIdentifier(e, i);
+			update = new Update(identifier, value);
 		};
 	}
 
 	public static class UpdateRequest implements Serializable {				// Sent from the coordinator to all replicas. Initiate the update protocol
-		public final Update update ;
+		public final Update update;
 		UpdateRequest(Update update){ this.update = update; };
 	}
 
 	public static class UpdateResponse implements Serializable {
-		public final Update update ;
-		UpdateResponse(Update update){ this.update = update; };
+		public final UpdateIdentifier updateId;
+		UpdateResponse(UpdateIdentifier updateId){ this.updateId = updateId; };
 	}			// Sent from a replica to the coordinator. ACK for the UpdateRequest
 
 	public static class WriteOkRequest implements Serializable {
-		public final Update update ;
-		WriteOkRequest(Update update){ this.update = update; };
+		public final UpdateIdentifier updateId;
+		WriteOkRequest(UpdateIdentifier updateId){ this.updateId = updateId; };
 	}			// Sent from the coordinator to all replicas. Complete the update, modifying the value v
 
 	public static class ElectionRequest implements Serializable {			// Sent from a replica to its successor. Initiate a coordinator election
@@ -99,7 +126,7 @@ public class QuorumBasedTotalOrder {
     protected int id;                             // node ID
     protected List<ActorRef> participants;        // list of participant nodes
     protected int v;                              // current v value
-    protected ArrayList<Update> pendingUpdates;   // updates not yet completed
+    protected Map<UpdateIdentifier, PendingUpdateTuple> pendingUpdates = new HashMap<>();   // updates not yet completed
     protected ArrayList<Update> completedUpdates; // finalized updates
     protected ActorRef coordinator;                  // current ID of the coordinator node
     protected int e,i;                            // latest valid values for epoch and update ID
@@ -152,14 +179,16 @@ public class QuorumBasedTotalOrder {
     }
 
     void onWrite(IssueWrite msg){
-			if(getSelf().equals(coordinator)){
+			if(getSelf().equals(coordinator)){					// If coordinator, forward the uupdate request
 				// TODO: Procedere con l'update protocol:
-				// Opzione 1: Aggiorno pendingUpdates e invio un UpdateRequest alle replicas
-				// Opzione 2: Invio a tutti (me compreso) l'UpdateRequest
-				multicast(new UpdateRequest(new Update(e, i+1, msg.value)));
+				// Opzione 1: Aggiorno pendingUpdates e invio un UpdateRequest alle replicas - NOP
+				// Opzione 2: Invio a tutti (me compreso) l'UpdateRequest	- OK
+				this.i ++;
+				UpdateIdentifier identifier = new UpdateIdentifier(e, i);
+				multicast(new UpdateRequest(new Update(identifier, msg.value)));
 
 			}
-			else{
+			else{																				// If replica, forward to the coordinator
 				// TODO: Invio un issue al coordinator
 				coordinator.tell(new IssueWrite(msg.value), getSender());
 			}
@@ -171,23 +200,34 @@ public class QuorumBasedTotalOrder {
 
     // First step of the update protocol, adding a step to the history + sends ACK
     void onUpdateRequest(UpdateRequest msg) {
-			pendingUpdates.add(msg.update);
-			getSender().tell(new UpdateResponse(msg.update), getSelf());
+			PendingUpdateTuple updateList = new PendingUpdateTuple(msg.update.v);
+			pendingUpdates.put(msg.update.identifier, updateList);
+			getSender().tell(new UpdateResponse(msg.update.identifier), getSelf());
     }
 
     // Handle the ACKs. When achieved a quorum, send the writeok
     void onUpdateResponse(UpdateResponse msg) {
-			// TODO: Aggiungere gestione degli ACK
+			if(getSelf().equals(coordinator)){
+				ArrayList<ActorRef> currentActors = pendingUpdates.get(msg.updateId).actors;
+				if(!currentActors.contains(getSender())){			// A node can't vote multiple times
+					currentActors.add(getSender());
+				}
+				if(currentActors.size() == QUORUM){						// If we have reachead the consensus, we send the WriteOK.
+																											// By using == rather than >=, we avoid sending multiple (useless) WriteOk msgs
+					multicast(new WriteOkRequest(msg.updateId));
+				}
+			}
     }
 
     // Complete the update process, changing the value of our v + updating the history
     void onWriteOk(WriteOkRequest msg) {
-			Update lastUpdate = msg.update;
-			pendingUpdates.remove(msg.update);
-			completedUpdates.add(lastUpdate);
-
-			this.i = lastUpdate.i;
-			this.v = lastUpdate.v;
+			UpdateIdentifier lastUpdate = msg.updateId;
+			Update update = new Update(lastUpdate, pendingUpdates.get(lastUpdate).value);
+			completedUpdates.add(update);
+			pendingUpdates.remove(msg.updateId);
+			
+			this.i = update.identifier.i;
+			this.v = update.v;
     }
 
     void onHeartbeatMessage(HeartbeatMessage msg) {
