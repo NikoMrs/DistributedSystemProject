@@ -21,7 +21,7 @@ dependencies {
 compileJava {
     options.compilerArgs += ["-Xlint:deprecation"]
 }
-mainClassName = "it.unitn.ds1.TwoPhaseCommit"
+mainClassName = "it.unitn.ds1.QuorumBasedTotalOrder"
 
 run {
     standardInput = System.in
