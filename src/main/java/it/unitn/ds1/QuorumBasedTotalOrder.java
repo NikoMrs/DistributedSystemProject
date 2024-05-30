@@ -280,11 +280,10 @@ public class QuorumBasedTotalOrder {
 		@Override
 		public Receive createReceive() {
 			// Empty mapping: we'll define it in the inherited classes
-			return receiveBuilder().match(StartMessage.class, this::onStartMessage)
-					.match(IssueWrite.class, this::onWrite).match(IssueRead.class, this::onRead)
-					.match(HeartbeatMessage.class, this::onHeartbeatMessage)
-					.match(ElectionRequest.class, this::onElectionRequest)
-					.match(ElectionResponse.class, this::onElectionResponse).build();
+			return receiveBuilder().match(StartMessage.class, this::onStartMessage).match(IssueWrite.class, this::onWrite)
+					.match(IssueRead.class, this::onRead).match(HeartbeatMessage.class, this::onHeartbeatMessage)
+					.match(ElectionRequest.class, this::onElectionRequest).match(ElectionResponse.class, this::onElectionResponse)
+					.build();
 		}
 
 		public Receive crashed() {

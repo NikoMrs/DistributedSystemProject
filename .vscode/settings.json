@@ -1,5 +1,10 @@
 {
     "editor.defaultFoldingRangeProvider": "vscjava.vscode-java-pack",
+    "[java]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": false,
+        "editor.detectIndentation": false
+    },
     "editor.formatOnSave": true,
     "java.format.settings.url": ".vscode/java-formatter.xml",
 }
