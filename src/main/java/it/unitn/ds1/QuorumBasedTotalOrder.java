@@ -38,6 +38,12 @@ public class QuorumBasedTotalOrder {
 		public int hashCode() {
 			return Objects.hash(e, i);
 		}
+
+		@Override
+		public String toString() {
+			// TODO Auto-generated method stub
+			return "(" + this.e + ", " + this.i + ")";
+		}
 	}
 
 	public static class Update {
@@ -147,7 +153,7 @@ public class QuorumBasedTotalOrder {
 		protected List<ActorRef> participants; // list of participant nodes
 		protected int v; // current v value
 		protected Map<UpdateIdentifier, PendingUpdateTuple> pendingUpdates = new HashMap<>(); // updates not yet completed
-		protected ArrayList<Update> completedUpdates; // finalized updates
+		protected ArrayList<Update> completedUpdates = new ArrayList<Update>(); // finalized updates
 		protected ActorRef coordinator; // current ID of the coordinator node
 		protected int e, i; // latest valid values for epoch and update ID
 
@@ -209,10 +215,12 @@ public class QuorumBasedTotalOrder {
 				// Opzione 2: Invio a tutti (me compreso) l'UpdateRequest - OK
 				this.i++;
 				UpdateIdentifier identifier = new UpdateIdentifier(e, i);
+				print("write " + msg.value + " request recived");
 				multicast(new UpdateRequest(new Update(identifier, msg.value)));
 
 			} else { // If replica, forward to the coordinator
 				// TODO: Invio un issue al coordinator
+				print("redirecting write to coordinator");
 				coordinator.tell(new IssueWrite(msg.value), getSender());
 			}
 		}
@@ -225,6 +233,8 @@ public class QuorumBasedTotalOrder {
 		void onUpdateRequest(UpdateRequest msg) {
 			PendingUpdateTuple updateList = new PendingUpdateTuple(msg.update.v);
 			pendingUpdates.put(msg.update.identifier, updateList);
+
+			print("update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") sending ACK");
 			getSender().tell(new UpdateResponse(msg.update.identifier), getSelf());
 		}
 
@@ -234,20 +244,25 @@ public class QuorumBasedTotalOrder {
 				ArrayList<ActorRef> currentActors = pendingUpdates.get(msg.updateId).actors;
 				if (!currentActors.contains(getSender())) { // A node can't vote multiple times
 					currentActors.add(getSender());
+					print(msg.updateId.toString() + " current quorum = " + currentActors.size());
 				}
 				if (currentActors.size() == QUORUM) { // If we have reachead the consensus, we send the WriteOK. By using == rather than >=, we avoid sending multiple (useless) WriteOk msgs
+					print(msg.updateId.toString() + " quorum reached");
 					multicast(new WriteOkRequest(msg.updateId));
 				}
 			}
 		}
 
-		// Complete the update process, changing the value of our v + updating the
-		// history
+		// Complete the update process, changing the value of our v + updating the history
 		void onWriteOk(WriteOkRequest msg) {
+			// TODO we need to check if the update is the first in the queue before applying the update
+
 			UpdateIdentifier lastUpdate = msg.updateId;
 			Update update = new Update(lastUpdate, pendingUpdates.get(lastUpdate).value);
 			completedUpdates.add(update);
 			pendingUpdates.remove(msg.updateId);
+
+			print("update " + msg.updateId.toString() + " completed, current value " + update.v);
 
 			this.i = update.identifier.i;
 			this.v = update.v;
@@ -283,7 +298,8 @@ public class QuorumBasedTotalOrder {
 			return receiveBuilder().match(StartMessage.class, this::onStartMessage).match(IssueWrite.class, this::onWrite)
 					.match(IssueRead.class, this::onRead).match(HeartbeatMessage.class, this::onHeartbeatMessage)
 					.match(ElectionRequest.class, this::onElectionRequest).match(ElectionResponse.class, this::onElectionResponse)
-					.build();
+					.match(UpdateRequest.class, this::onUpdateRequest).match(UpdateResponse.class, this::onUpdateResponse)
+					.match(WriteOkRequest.class, this::onWriteOk).build();
 		}
 
 		public Receive crashed() {
@@ -323,7 +339,10 @@ public class QuorumBasedTotalOrder {
 
 		// // Send the start messages to the coordinator
 		// coordinator.tell(start, null);
-		group.get(1).tell(new IssueRead(), null);
+		// group.get(1).tell(new IssueRead(), null);
+		group.get(2).tell(new IssueWrite(5), null);
+		group.get(0).tell(new IssueWrite(3), null);
+		group.get(0).tell(new IssueWrite(10), null);
 
 		try {
 			System.out.println(">>> Press ENTER to exit <<<");
