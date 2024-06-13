@@ -3,6 +3,7 @@ package it.unitn.ds1;
 import akka.actor.ActorRef;
 import akka.actor.AbstractActor;
 import akka.actor.ActorSystem;
+import akka.actor.Cancellable;
 import akka.actor.Props;
 import scala.concurrent.duration.Duration;
 
@@ -18,6 +19,7 @@ import java.lang.Thread;
 import java.util.Collections;
 import java.util.HashMap;
 import java.io.IOException;
+// import java.time.Duration;
 
 public class QuorumBasedTotalOrder {
 
@@ -140,8 +142,14 @@ public class QuorumBasedTotalOrder {
 	} // Sent to the most updated replica to every other replica. Completes the
 		// election, updating the old replicas' v
 
+	public static class PreHeartbeatMessage implements Serializable {
+	}
+
 	public static class HeartbeatMessage implements Serializable {
 	} // Sent periodically from the coordinator to all replicas.
+
+	public static class HeartbeatTimeout implements Serializable {
+	}
 
 	public static class Timeout implements Serializable {
 	}
@@ -156,6 +164,7 @@ public class QuorumBasedTotalOrder {
 		protected ArrayList<Update> completedUpdates = new ArrayList<Update>(); // finalized updates
 		protected ActorRef coordinator; // current ID of the coordinator node
 		protected int e, i; // latest valid values for epoch and update ID
+		protected Cancellable heartBeatTimer;
 
 		public Node(int id) {
 			super();
@@ -166,6 +175,14 @@ public class QuorumBasedTotalOrder {
 			// We assume that the first coordination is the first node of the group
 			participants = new ArrayList<>();
 			this.coordinator = msg.group.get(0);
+			// Do if you are the coordinator
+			if (this.coordinator.equals(getSelf())) {
+				// Set the heartbit message
+				setHeartbet(HEARTHBEAT_TIMEOUT - 2000);
+			} else {
+				// Set heeartbeat timeout for the replica
+				setHeartbetTimeout(HEARTHBEAT_TIMEOUT);
+			}
 			for (ActorRef b : msg.group) {
 				this.participants.add(b);
 			}
@@ -184,6 +201,18 @@ public class QuorumBasedTotalOrder {
 				Thread.sleep(d);
 			} catch (Exception ignored) {
 			}
+		}
+
+		void setHeartbet(int time) {
+			getContext().system().scheduler().scheduleWithFixedDelay(Duration.create(time, TimeUnit.MILLISECONDS),
+					Duration.create(time, TimeUnit.MILLISECONDS), getSelf(), new PreHeartbeatMessage(),
+					getContext().system().dispatcher(), getSelf());
+		}
+
+		void setHeartbetTimeout(int time) {
+			this.heartBeatTimer = getContext().system().scheduler().scheduleWithFixedDelay(
+					Duration.create(time, TimeUnit.MILLISECONDS), Duration.create(time, TimeUnit.MILLISECONDS), getSelf(),
+					new HeartbeatTimeout(), getContext().system().dispatcher(), getSelf());
 		}
 
 		void multicast(Serializable m) {
@@ -268,8 +297,22 @@ public class QuorumBasedTotalOrder {
 			this.v = update.v;
 		}
 
+		void onPreHeartbeatMessage(PreHeartbeatMessage msg) {
+			// Sent periodically from the coordinator to all replicas.
+			print("Sending Heartbit");
+			multicast(new HeartbeatMessage());
+		}
+
 		void onHeartbeatMessage(HeartbeatMessage msg) {
 			// Sent periodically from the coordinator to all replicas.
+			if (!this.coordinator.equals(getSelf())) {
+				this.heartBeatTimer.cancel();
+				print("coordinator alive");
+			}
+		}
+
+		void onHeartbeatTimeout(HeartbeatTimeout msg) {
+			print("coordinator crashed, starting new election...");
 		}
 
 		void onElectionRequest(ElectionRequest msg) {// Sent from a replica to its successor. Initiate a coordinator election
@@ -299,7 +342,8 @@ public class QuorumBasedTotalOrder {
 					.match(IssueRead.class, this::onRead).match(HeartbeatMessage.class, this::onHeartbeatMessage)
 					.match(ElectionRequest.class, this::onElectionRequest).match(ElectionResponse.class, this::onElectionResponse)
 					.match(UpdateRequest.class, this::onUpdateRequest).match(UpdateResponse.class, this::onUpdateResponse)
-					.match(WriteOkRequest.class, this::onWriteOk).build();
+					.match(WriteOkRequest.class, this::onWriteOk).match(PreHeartbeatMessage.class, this::onPreHeartbeatMessage)
+					.match(HeartbeatTimeout.class, this::onHeartbeatTimeout).build();
 		}
 
 		public Receive crashed() {
