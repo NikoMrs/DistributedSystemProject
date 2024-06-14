@@ -10,6 +10,7 @@ import scala.concurrent.duration.Duration;
 import java.io.Serializable;
 import java.util.concurrent.TimeUnit;
 import java.util.Objects;
+import java.util.Random;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.List;
@@ -159,12 +160,16 @@ public class QuorumBasedTotalOrder {
 	public static class Node extends AbstractActor {
 		protected int id; // node ID
 		protected List<ActorRef> participants; // list of participant nodes
-		protected int v; // current v value
+		protected int v = 0; // current v value
 		protected Map<UpdateIdentifier, PendingUpdateTuple> pendingUpdates = new HashMap<>(); // updates not yet completed
 		protected ArrayList<Update> completedUpdates = new ArrayList<Update>(); // finalized updates
 		protected ActorRef coordinator; // current ID of the coordinator node
 		protected int e, i; // latest valid values for epoch and update ID
 		protected Cancellable heartBeatTimer;
+		protected Map<UpdateIdentifier, Cancellable> writeOkTimeout = new HashMap<UpdateIdentifier, Cancellable>();
+		// protected Map<UpdateIdentifier, Cancellable> writeOkTimeout = new HashMap<UpdateIdentifier, Cancellable>();
+		// protected Cancellable writeOkTimeouts;
+		protected Random rnd = new Random();
 
 		public Node(int id) {
 			super();
@@ -190,7 +195,7 @@ public class QuorumBasedTotalOrder {
 		}
 
 		// emulate a crash and a recovery in a given time
-		void crash(int recoverIn) {
+		void crash() {
 			getContext().become(crashed());
 			print("CRASH!!!");
 		}
@@ -215,23 +220,70 @@ public class QuorumBasedTotalOrder {
 					new HeartbeatTimeout(), getContext().system().dispatcher(), getSelf());
 		}
 
+		// void setWriteOkTimeout(int time) {
+		// this.writeOkTimeout =
+		// }
+
+		// void multicast(Serializable m) {
+		// for (ActorRef p : participants)
+		// p.tell(m, getSelf());
+		// }
+
 		void multicast(Serializable m) {
-			for (ActorRef p : participants)
-				p.tell(m, getSelf());
+			// randomly arrange peers
+			List<ActorRef> shuffledGroup = new ArrayList<>(participants);
+			Collections.shuffle(shuffledGroup);
+
+			// this.multicastTimout.clear();
+
+			// We need to first send the message to the coordinator without ay delay, and after send to the others with a random delay
+			getSelf().tell(m, getSelf());
+
+			// multicast to all peers in the group (do not send any message to self)
+			for (ActorRef p : shuffledGroup) {
+				if (!p.equals(getSelf())) {
+					p.tell(m, getSelf());
+					// this.multicastTimout.put(p, setTimeout(BROADCAST_INITIATE_TIMEOUT));
+					// simulate network delays using sleep
+					try {
+						Thread.sleep(rnd.nextInt(100));
+					} catch (InterruptedException e) {
+						e.printStackTrace();
+					}
+				}
+			}
 		}
 
 		// a multicast implementation that crashes after sending the first message
 		void multicastAndCrash(Serializable m, int recoverIn) {
+
+			// randomly arrange peers
+			List<ActorRef> shuffledGroup = new ArrayList<>(participants);
+			Collections.shuffle(shuffledGroup);
+
+			// We need to first send the message to the coordinator without ay delay, and after send to the others with a random delay
+			getSelf().tell(m, getSelf());
+
+			// multicast to all peers in the group (do not send any message to self)
+			for (ActorRef p : shuffledGroup) {
+				if (!p.equals(getSelf())) {
+					p.tell(m, getSelf());
+
+					// Send one msg and crash
+					crash();
+					return;
+				}
+			}
+
 			for (ActorRef p : participants) {
 				p.tell(m, getSelf());
-				crash(recoverIn);
-				return;
+
 			}
 		}
 
 		// schedule a Timeout message in specified time
-		void setTimeout(int time) {
-			getContext().system().scheduler().scheduleOnce(Duration.create(time, TimeUnit.MILLISECONDS), getSelf(),
+		Cancellable setTimeout(int time) {
+			return getContext().system().scheduler().scheduleOnce(Duration.create(time, TimeUnit.MILLISECONDS), getSelf(),
 					new Timeout(), // the message to send
 					getContext().system().dispatcher(), getSelf());
 		}
@@ -265,11 +317,15 @@ public class QuorumBasedTotalOrder {
 
 			print("update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") sending ACK");
 			getSender().tell(new UpdateResponse(msg.update.identifier), getSelf());
+
+			// Set the WritrOk timeout
+			this.writeOkTimeout.put(msg.update.identifier, setTimeout(WRITEOK_TIMEOUT));
 		}
 
 		// Handle the ACKs. When achieved a quorum, send the writeok
 		void onUpdateResponse(UpdateResponse msg) {
 			if (getSelf().equals(coordinator)) {
+				// print(pendingUpdates + " - " + msg.updateId);
 				ArrayList<ActorRef> currentActors = pendingUpdates.get(msg.updateId).actors;
 				if (!currentActors.contains(getSender())) { // A node can't vote multiple times
 					currentActors.add(getSender());
@@ -284,6 +340,10 @@ public class QuorumBasedTotalOrder {
 
 		// Complete the update process, changing the value of our v + updating the history
 		void onWriteOk(WriteOkRequest msg) {
+			// We need to cancel the corresponding timeout
+			this.writeOkTimeout.get(msg.updateId).cancel();
+			this.writeOkTimeout.remove(msg.updateId);
+
 			// TODO we need to check if the update is the first in the queue before applying the update
 
 			UpdateIdentifier lastUpdate = msg.updateId;
@@ -324,6 +384,10 @@ public class QuorumBasedTotalOrder {
 			// Sent from a replica to its predecessor. ACK for the ElectionRequest
 		}
 
+		void onTimeout(Timeout msg) {
+			print("coordinator crashed on WriteOk, starting new election...");
+		}
+
 		// a simple logging function
 		void print(String s) {
 			String role;
@@ -343,15 +407,12 @@ public class QuorumBasedTotalOrder {
 					.match(ElectionRequest.class, this::onElectionRequest).match(ElectionResponse.class, this::onElectionResponse)
 					.match(UpdateRequest.class, this::onUpdateRequest).match(UpdateResponse.class, this::onUpdateResponse)
 					.match(WriteOkRequest.class, this::onWriteOk).match(PreHeartbeatMessage.class, this::onPreHeartbeatMessage)
-					.match(HeartbeatTimeout.class, this::onHeartbeatTimeout).build();
+					.match(HeartbeatTimeout.class, this::onHeartbeatTimeout).match(Timeout.class, this::onTimeout).build();
 		}
 
 		public Receive crashed() {
-			return null;
-			// receiveBuilder()
-			// .match(Recovery.class, this::onRecovery)
-			// .matchAny(msg -> {})
-			// .build();
+			return receiveBuilder().matchAny(msg -> {
+			}).build();
 		}
 
 		static public Props props(int id) {
