@@ -44,7 +44,6 @@ public class QuorumBasedTotalOrder {
 
 		@Override
 		public String toString() {
-			// TODO Auto-generated method stub
 			return "(" + this.e + ", " + this.i + ")";
 		}
 	}
@@ -76,8 +75,11 @@ public class QuorumBasedTotalOrder {
 	// Timeouts Configuration
 	final static int WRITEOK_TIMEOUT = 3000; // timeout started after receiving the update msg. Detects a coordinator crash
 	final static int BROADCAST_INITIATE_TIMEOUT = 1000; // timeout started after sending a write request. Detects a coordinator crash
-	final static int HEARTHBEAT_TIMEOUT = 10000; // timeout started after receiving a heartbeat msg. Detects a coordinator crash
 	final static int REPLICA_TIMEOUT = 2000; // timeout started after sending a msg to a replica. Detects a replica crash
+	final static int HEARTHBEAT_FREQUENCY = 10000; // frequency of heartbeat messages
+	final static int AVERAGE_RTT = 2000;
+	final static int HEARTHBEAT_TIMEOUT = HEARTHBEAT_FREQUENCY + AVERAGE_RTT; // timeout started after receiving a heartbeat msg. Detects a coordinator crash
+	final static int DELAY_BOUND = 200;
 
 	// Messages Configuration
 	public static class StartMessage implements Serializable { // Start message that sends the list of participants to everyone
@@ -134,6 +136,7 @@ public class QuorumBasedTotalOrder {
 
 	public static class ElectionRequest implements Serializable { // Sent from a replica to its successor. Initiate a coordinator election
 		// TODO: Aggiungere gli update noti da ogni nodo
+		public Map<ActorRef, UpdateIdentifier> pendingUpdates = new HashMap<>();
 	}
 
 	public static class ElectionResponse implements Serializable {
@@ -182,11 +185,11 @@ public class QuorumBasedTotalOrder {
 			this.coordinator = msg.group.get(0);
 			// Do if you are the coordinator
 			if (this.coordinator.equals(getSelf())) {
-				// Set the heartbit message
-				setHeartbet(HEARTHBEAT_TIMEOUT - 2000);
+				// Set the heartbeat message
+				setHeartbeat(HEARTHBEAT_FREQUENCY);
 			} else {
 				// Set heeartbeat timeout for the replica
-				setHeartbetTimeout(HEARTHBEAT_TIMEOUT);
+				setHeartbeatTimeout(HEARTHBEAT_TIMEOUT);
 			}
 			for (ActorRef b : msg.group) {
 				this.participants.add(b);
@@ -208,13 +211,13 @@ public class QuorumBasedTotalOrder {
 			}
 		}
 
-		void setHeartbet(int time) {
+		void setHeartbeat(int time) {
 			getContext().system().scheduler().scheduleWithFixedDelay(Duration.create(time, TimeUnit.MILLISECONDS),
 					Duration.create(time, TimeUnit.MILLISECONDS), getSelf(), new PreHeartbeatMessage(),
 					getContext().system().dispatcher(), getSelf());
 		}
 
-		void setHeartbetTimeout(int time) {
+		void setHeartbeatTimeout(int time) {
 			this.heartBeatTimer = getContext().system().scheduler().scheduleWithFixedDelay(
 					Duration.create(time, TimeUnit.MILLISECONDS), Duration.create(time, TimeUnit.MILLISECONDS), getSelf(),
 					new HeartbeatTimeout(), getContext().system().dispatcher(), getSelf());
@@ -237,19 +240,14 @@ public class QuorumBasedTotalOrder {
 			// this.multicastTimout.clear();
 
 			// We need to first send the message to the coordinator without ay delay, and after send to the others with a random delay
-			getSelf().tell(m, getSelf());
+			this.getSelf().tell(m, this.getSelf());
 
 			// multicast to all peers in the group (do not send any message to self)
 			for (ActorRef p : shuffledGroup) {
 				if (!p.equals(getSelf())) {
 					p.tell(m, getSelf());
-					// this.multicastTimout.put(p, setTimeout(BROADCAST_INITIATE_TIMEOUT));
 					// simulate network delays using sleep
-					try {
-						Thread.sleep(rnd.nextInt(100));
-					} catch (InterruptedException e) {
-						e.printStackTrace();
-					}
+					delay(DELAY_BOUND);
 				}
 			}
 		}
@@ -290,17 +288,12 @@ public class QuorumBasedTotalOrder {
 
 		void onWrite(IssueWrite msg) {
 			if (getSelf().equals(coordinator)) { // If coordinator, forward the uupdate request
-				// TODO: Procedere con l'update protocol:
-				// Opzione 1: Aggiorno pendingUpdates e invio un UpdateRequest alle replicas -
-				// NOP
-				// Opzione 2: Invio a tutti (me compreso) l'UpdateRequest - OK
 				this.i++;
 				UpdateIdentifier identifier = new UpdateIdentifier(e, i);
 				print("write " + msg.value + " request recived");
 				multicast(new UpdateRequest(new Update(identifier, msg.value)));
 
 			} else { // If replica, forward to the coordinator
-				// TODO: Invio un issue al coordinator
 				print("redirecting write to coordinator");
 				coordinator.tell(new IssueWrite(msg.value), getSender());
 			}
@@ -315,7 +308,12 @@ public class QuorumBasedTotalOrder {
 			PendingUpdateTuple updateList = new PendingUpdateTuple(msg.update.v);
 			pendingUpdates.put(msg.update.identifier, updateList);
 
+			if (!(getSelf().equals(this.coordinator))) {
+				delay(DELAY_BOUND); // network delay
+			}
+
 			print("update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") sending ACK");
+
 			getSender().tell(new UpdateResponse(msg.update.identifier), getSelf());
 
 			// Set the WritrOk timeout
@@ -344,8 +342,6 @@ public class QuorumBasedTotalOrder {
 			this.writeOkTimeout.get(msg.updateId).cancel();
 			this.writeOkTimeout.remove(msg.updateId);
 
-			// TODO we need to check if the update is the first in the queue before applying the update
-
 			UpdateIdentifier lastUpdate = msg.updateId;
 			Update update = new Update(lastUpdate, pendingUpdates.get(lastUpdate).value);
 			completedUpdates.add(update);
@@ -359,7 +355,7 @@ public class QuorumBasedTotalOrder {
 
 		void onPreHeartbeatMessage(PreHeartbeatMessage msg) {
 			// Sent periodically from the coordinator to all replicas.
-			print("Sending Heartbit");
+			print("Sending Heartbeat");
 			multicast(new HeartbeatMessage());
 		}
 
@@ -373,6 +369,9 @@ public class QuorumBasedTotalOrder {
 
 		void onHeartbeatTimeout(HeartbeatTimeout msg) {
 			print("coordinator crashed, starting new election...");
+			// TODO scrivo al primo nodo dell'anello e e poi lui contatta tutti gli altri membri in broadcast avvisando dell'inizio di una nuova elezione
+			// election message to the next available replica of the ring with the update history
+
 		}
 
 		void onElectionRequest(ElectionRequest msg) {// Sent from a replica to its successor. Initiate a coordinator election
@@ -384,7 +383,7 @@ public class QuorumBasedTotalOrder {
 			// Sent from a replica to its predecessor. ACK for the ElectionRequest
 		}
 
-		void onTimeout(Timeout msg) {
+		void onWriteOkTimeout(Timeout msg) {
 			print("coordinator crashed on WriteOk, starting new election...");
 		}
 
@@ -407,7 +406,7 @@ public class QuorumBasedTotalOrder {
 					.match(ElectionRequest.class, this::onElectionRequest).match(ElectionResponse.class, this::onElectionResponse)
 					.match(UpdateRequest.class, this::onUpdateRequest).match(UpdateResponse.class, this::onUpdateResponse)
 					.match(WriteOkRequest.class, this::onWriteOk).match(PreHeartbeatMessage.class, this::onPreHeartbeatMessage)
-					.match(HeartbeatTimeout.class, this::onHeartbeatTimeout).match(Timeout.class, this::onTimeout).build();
+					.match(HeartbeatTimeout.class, this::onHeartbeatTimeout).match(Timeout.class, this::onWriteOkTimeout).build();
 		}
 
 		public Receive crashed() {
@@ -446,8 +445,8 @@ public class QuorumBasedTotalOrder {
 		// coordinator.tell(start, null);
 		// group.get(1).tell(new IssueRead(), null);
 		group.get(2).tell(new IssueWrite(5), null);
-		group.get(0).tell(new IssueWrite(3), null);
-		group.get(0).tell(new IssueWrite(10), null);
+		// group.get(0).tell(new IssueWrite(3), null);
+		// group.get(0).tell(new IssueWrite(10), null);
 
 		try {
 			System.out.println(">>> Press ENTER to exit <<<");
