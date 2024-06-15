@@ -25,7 +25,7 @@ import java.io.IOException;
 public class QuorumBasedTotalOrder {
 
 	// General Configuration
-	final static int N_PARTICIPANTS = 3;
+	final static int N_PARTICIPANTS = 4;
 	final static int QUORUM = (N_PARTICIPANTS / 2) + 1;
 
 	public static class UpdateIdentifier {
@@ -80,6 +80,8 @@ public class QuorumBasedTotalOrder {
 	final static int AVERAGE_RTT = 2000;
 	final static int HEARTHBEAT_TIMEOUT = HEARTHBEAT_FREQUENCY + AVERAGE_RTT; // timeout started after receiving a heartbeat msg. Detects a coordinator crash
 	final static int DELAY_BOUND = 200;
+	// TODO bisogna togliere questo flag e implementare un meccaniscmo per non generare muiltiple elezioni
+	static boolean electionStarted = false;
 
 	// Messages Configuration
 	public static class StartMessage implements Serializable { // Start message that sends the list of participants to everyone
@@ -135,8 +137,8 @@ public class QuorumBasedTotalOrder {
 	} // Sent from the coordinator to all replicas. Complete the update, modifying the value v
 
 	public static class ElectionRequest implements Serializable { // Sent from a replica to its successor. Initiate a coordinator election
-		// TODO: Aggiungere gli update noti da ogni nodo
-		public Map<ActorRef, UpdateIdentifier> pendingUpdates = new HashMap<>();
+		// TODO: Aggiungere gli update noti da ogni nodo Dobbiamo anche aggiungere gli ID dei processi
+		public Map<ActorRef, UpdateIdentifier> lastUpdateList = new HashMap<>();
 	}
 
 	public static class ElectionResponse implements Serializable {
@@ -158,6 +160,14 @@ public class QuorumBasedTotalOrder {
 	public static class Timeout implements Serializable {
 	}
 
+	public static class ElectionTimeout implements Serializable {
+		ActorRef target;
+
+		ElectionTimeout(ActorRef target) {
+			this.target = target;
+		}
+	}
+
 	/*-- Common functionality for both Coordinator and Replicas ------------*/
 
 	public static class Node extends AbstractActor {
@@ -167,16 +177,19 @@ public class QuorumBasedTotalOrder {
 		protected Map<UpdateIdentifier, PendingUpdateTuple> pendingUpdates = new HashMap<>(); // updates not yet completed
 		protected ArrayList<Update> completedUpdates = new ArrayList<Update>(); // finalized updates
 		protected ActorRef coordinator; // current ID of the coordinator node
-		protected int e, i; // latest valid values for epoch and update ID
-		protected Cancellable heartBeatTimer;
+		protected int e = 0, i = 0; // latest valid values for epoch and update ID
+		protected Cancellable heartBeatTimer, electionTimeout;
 		protected Map<UpdateIdentifier, Cancellable> writeOkTimeout = new HashMap<UpdateIdentifier, Cancellable>();
-		// protected Map<UpdateIdentifier, Cancellable> writeOkTimeout = new HashMap<UpdateIdentifier, Cancellable>();
-		// protected Cancellable writeOkTimeouts;
+
+		protected ElectionRequest el_msg = null;
+		protected boolean election = false;
+
 		protected Random rnd = new Random();
 
 		public Node(int id) {
 			super();
 			this.id = id;
+			// Adding the firat update
 		}
 
 		void onStartMessage(StartMessage msg) {
@@ -203,6 +216,12 @@ public class QuorumBasedTotalOrder {
 			print("CRASH!!!");
 		}
 
+		// enter the election state
+		void election() {
+			getContext().become(electionMode());
+			print("entering ELECTION mode");
+		}
+
 		// emulate a delay of d milliseconds
 		void delay(int d) {
 			try {
@@ -223,9 +242,11 @@ public class QuorumBasedTotalOrder {
 					new HeartbeatTimeout(), getContext().system().dispatcher(), getSelf());
 		}
 
-		// void setWriteOkTimeout(int time) {
-		// this.writeOkTimeout =
-		// }
+		void setElectionTimeout(int time, ActorRef target) {
+			this.electionTimeout = getContext().system().scheduler().scheduleOnce(
+					Duration.create(time, TimeUnit.MILLISECONDS), getSelf(), new ElectionTimeout(target), // the message to send
+					getContext().system().dispatcher(), getSelf());
+		}
 
 		// void multicast(Serializable m) {
 		// for (ActorRef p : participants)
@@ -250,6 +271,7 @@ public class QuorumBasedTotalOrder {
 					delay(DELAY_BOUND);
 				}
 			}
+			crash();
 		}
 
 		// a multicast implementation that crashes after sending the first message
@@ -295,7 +317,9 @@ public class QuorumBasedTotalOrder {
 
 			} else { // If replica, forward to the coordinator
 				print("redirecting write to coordinator");
+				delay(DELAY_BOUND); // Simulating networtk delay
 				coordinator.tell(new IssueWrite(msg.value), getSender());
+				// TODO aggiungere e gestire un timeout in caso il coordinatore non inizi un update
 			}
 		}
 
@@ -369,18 +393,71 @@ public class QuorumBasedTotalOrder {
 
 		void onHeartbeatTimeout(HeartbeatTimeout msg) {
 			print("coordinator crashed, starting new election...");
-			// TODO scrivo al primo nodo dell'anello e e poi lui contatta tutti gli altri membri in broadcast avvisando dell'inizio di una nuova elezione
-			// election message to the next available replica of the ring with the update history
+			// TODO scrivo al primo nodo dell'anello e e poi lui contatta tutti gli altri membri in broadcast avvisando dell'inizio di una nuova elezione (timuovere l'if)
+			if (!electionStarted) {
+				// TODO bisogna ruimuovere questa variabile
+				electionStarted = true;
+
+				if (!election) {
+					election = true;
+					election();
+				}
+				ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
+				el_msg = new ElectionRequest();
+				el_msg.lastUpdateList.put(getSelf(), (new UpdateIdentifier(this.e, this.i)));
+				next.tell(el_msg, getSelf());
+				// TODO aggiungere un timeout che tiene traccia del nodo al quale abbiamo inviato il messaggio e in caso scatti lo rimuova dall'anello e reinvii Election msg
+				setElectionTimeout(500, next);
+			}
 
 		}
 
 		void onElectionRequest(ElectionRequest msg) {// Sent from a replica to its successor. Initiate a coordinator election
 			// TODO: Aggiungere gli update noti da ogni nodo
-
+			// print(msg.lastUpdateList + "");
+			print("Election request recived");
+			if (!election) {
+				election = true;
+				election();
+			}
+			getSender().tell(new ElectionResponse(), getSelf());
+			// TODO bisogna mandare il messaggio di Election request anche al nodo successivo
+			el_msg = msg;
+			if (el_msg.lastUpdateList.get(getSelf()) == null) {
+				el_msg.lastUpdateList.put(getSelf(), new UpdateIdentifier(this.e, this.i));
+				// I need to find the next node in the link and send forward the election message
+				// TODO riformulare con una funzione piu' elegante
+				ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
+				next.tell(el_msg, getSelf());
+				setElectionTimeout(500, next);
+			} else {
+				// TODO siccome il mio ultimo update e' gia' presente devo eleggere il coordinatore e propagare l'informazione, si potrebbe propagare anche la nuova topologia dell'anello (opzionale)
+				print("Circle complete:" + el_msg.lastUpdateList);
+			}
 		}
 
 		void onElectionResponse(ElectionResponse msg) {
 			// Sent from a replica to its predecessor. ACK for the ElectionRequest
+			print("ELECTION ACK RECIVED");
+			// Ack arrived timeout cancelled
+			this.electionTimeout.cancel();
+		}
+
+		void onElectionTimeout(ElectionTimeout msg) {
+			this.participants.remove(msg.target);
+			print("REMOVED");
+			// TODO inviare un nuovo messaggio al nodo successivo visto che abbiamo rimosso quello in crash
+			print("ELECTION TIMEOUT");
+			ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
+			// If we don't have an election message we have to create a new one
+			if (el_msg == null) {
+				el_msg = new ElectionRequest();
+				el_msg.lastUpdateList.put(getSelf(), (new UpdateIdentifier(this.e, this.i)));
+			}
+			next.tell(el_msg, getSelf());
+			// TODO aggiungere un timeout che tiene traccia del nodo al quale abbiamo inviato il messaggio e in caso scatti lo rimuova dall'anello e reinvii Election msg
+			setElectionTimeout(500, next);
+
 		}
 
 		void onWriteOkTimeout(Timeout msg) {
@@ -403,15 +480,22 @@ public class QuorumBasedTotalOrder {
 			// Empty mapping: we'll define it in the inherited classes
 			return receiveBuilder().match(StartMessage.class, this::onStartMessage).match(IssueWrite.class, this::onWrite)
 					.match(IssueRead.class, this::onRead).match(HeartbeatMessage.class, this::onHeartbeatMessage)
-					.match(ElectionRequest.class, this::onElectionRequest).match(ElectionResponse.class, this::onElectionResponse)
-					.match(UpdateRequest.class, this::onUpdateRequest).match(UpdateResponse.class, this::onUpdateResponse)
-					.match(WriteOkRequest.class, this::onWriteOk).match(PreHeartbeatMessage.class, this::onPreHeartbeatMessage)
+					.match(ElectionRequest.class, this::onElectionRequest).match(UpdateRequest.class, this::onUpdateRequest)
+					.match(UpdateResponse.class, this::onUpdateResponse).match(WriteOkRequest.class, this::onWriteOk)
+					.match(PreHeartbeatMessage.class, this::onPreHeartbeatMessage)
 					.match(HeartbeatTimeout.class, this::onHeartbeatTimeout).match(Timeout.class, this::onWriteOkTimeout).build();
 		}
 
 		public Receive crashed() {
 			return receiveBuilder().matchAny(msg -> {
 			}).build();
+		}
+
+		public Receive electionMode() {
+			return receiveBuilder().match(ElectionRequest.class, this::onElectionRequest)
+					.match(ElectionResponse.class, this::onElectionResponse).match(ElectionTimeout.class, this::onElectionTimeout)
+					.matchAny(msg -> {
+					}).build();
 		}
 
 		static public Props props(int id) {
