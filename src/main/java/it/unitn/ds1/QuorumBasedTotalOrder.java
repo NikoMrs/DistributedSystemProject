@@ -5,6 +5,7 @@ import akka.actor.AbstractActor;
 import akka.actor.ActorSystem;
 import akka.actor.Cancellable;
 import akka.actor.Props;
+import akka.japi.Pair;
 import scala.concurrent.duration.Duration;
 
 import java.io.Serializable;
@@ -12,8 +13,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;
 import java.util.Map;
 import java.lang.Thread;
@@ -138,7 +141,7 @@ public class QuorumBasedTotalOrder {
 
 	public static class ElectionRequest implements Serializable { // Sent from a replica to its successor. Initiate a coordinator election
 		// TODO: Aggiungere gli update noti da ogni nodo Dobbiamo anche aggiungere gli ID dei processi
-		public Map<ActorRef, UpdateIdentifier> lastUpdateList = new HashMap<>();
+		public Map<Integer, Pair<ActorRef, UpdateIdentifier>> lastUpdateList = new TreeMap<>();
 	}
 
 	public static class ElectionResponse implements Serializable {
@@ -404,7 +407,7 @@ public class QuorumBasedTotalOrder {
 				}
 				ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
 				el_msg = new ElectionRequest();
-				el_msg.lastUpdateList.put(getSelf(), (new UpdateIdentifier(this.e, this.i)));
+				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
 				next.tell(el_msg, getSelf());
 				// TODO aggiungere un timeout che tiene traccia del nodo al quale abbiamo inviato il messaggio e in caso scatti lo rimuova dall'anello e reinvii Election msg
 				setElectionTimeout(500, next);
@@ -423,8 +426,8 @@ public class QuorumBasedTotalOrder {
 			getSender().tell(new ElectionResponse(), getSelf());
 			// TODO bisogna mandare il messaggio di Election request anche al nodo successivo
 			el_msg = msg;
-			if (el_msg.lastUpdateList.get(getSelf()) == null) {
-				el_msg.lastUpdateList.put(getSelf(), new UpdateIdentifier(this.e, this.i));
+			if (el_msg.lastUpdateList.get(this.id) == null) {
+				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
 				// I need to find the next node in the link and send forward the election message
 				// TODO riformulare con una funzione piu' elegante
 				ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
@@ -432,7 +435,7 @@ public class QuorumBasedTotalOrder {
 				setElectionTimeout(500, next);
 			} else {
 				// TODO siccome il mio ultimo update e' gia' presente devo eleggere il coordinatore e propagare l'informazione, si potrebbe propagare anche la nuova topologia dell'anello (opzionale)
-				print("Circle complete:" + el_msg.lastUpdateList);
+
 			}
 		}
 
@@ -452,7 +455,7 @@ public class QuorumBasedTotalOrder {
 			// If we don't have an election message we have to create a new one
 			if (el_msg == null) {
 				el_msg = new ElectionRequest();
-				el_msg.lastUpdateList.put(getSelf(), (new UpdateIdentifier(this.e, this.i)));
+				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
 			}
 			next.tell(el_msg, getSelf());
 			// TODO aggiungere un timeout che tiene traccia del nodo al quale abbiamo inviato il messaggio e in caso scatti lo rimuova dall'anello e reinvii Election msg
