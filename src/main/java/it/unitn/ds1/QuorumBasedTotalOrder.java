@@ -85,6 +85,7 @@ public class QuorumBasedTotalOrder {
 	final static int DELAY_BOUND = 200;
 	// TODO bisogna togliere questo flag e implementare un meccaniscmo per non generare muiltiple elezioni
 	static boolean electionStarted = false;
+	static boolean crash = true;
 
 	// Messages Configuration
 	public static class StartMessage implements Serializable { // Start message that sends the list of participants to everyone
@@ -148,6 +149,13 @@ public class QuorumBasedTotalOrder {
 	} // Sent from a replica to its predecessor. ACK for the ElectionRequest
 
 	public static class Synchronization implements Serializable {
+		List<ActorRef> participants;
+		ArrayList<Update> completedUpdates;
+
+		Synchronization(List<ActorRef> participants, ArrayList<Update> completedUpdates) {
+			this.participants = participants;
+			this.completedUpdates = completedUpdates;
+		}
 	} // Sent to the most updated replica to every other replica. Completes the
 		// election, updating the old replicas' v
 
@@ -267,14 +275,22 @@ public class QuorumBasedTotalOrder {
 			this.getSelf().tell(m, this.getSelf());
 
 			// multicast to all peers in the group (do not send any message to self)
+			int i = 1;
+
 			for (ActorRef p : shuffledGroup) {
+				i++;
+				if (i == N_PARTICIPANTS && crash) {
+					crash = false;
+					crash();
+					break;
+				}
 				if (!p.equals(getSelf())) {
 					p.tell(m, getSelf());
 					// simulate network delays using sleep
 					delay(DELAY_BOUND);
 				}
 			}
-			crash();
+
 		}
 
 		// a multicast implementation that crashes after sending the first message
@@ -474,8 +490,11 @@ public class QuorumBasedTotalOrder {
 					print("SYNC (" + this.id + ")");
 					// Create a new partecipants list
 					this.participants = newParticipants;
-					this.coordinator = last.first();
-					multicast(new Synchronization());
+					// this.coordinator = last.first();
+					// this.e++; // Incrementing the epoch
+					// this.i = 0; // Setting the update identifier to 0
+					print("Last Update: (" + this.e + ", " + this.i + ") = " + this.v);
+					multicast(new Synchronization(this.participants, this.completedUpdates));
 				}
 			}
 		}
@@ -508,10 +527,19 @@ public class QuorumBasedTotalOrder {
 			print("Sync recived by coordinator");
 			// TODO completare la sincronizzaizone
 			this.coordinator = getSender(); // Change coordinator ref
-			// Update partecipants
-			// Synchronize to last update
-			// Exit election mode
+			this.participants = msg.participants; // Update partecipants
+			this.completedUpdates = msg.completedUpdates; // Synchronize to last update
 
+			if (!msg.completedUpdates.isEmpty()) {
+				// There are completed updates
+				Update update = msg.completedUpdates.get(msg.completedUpdates.size());
+				this.v = update.v;
+				this.e = update.identifier.e;
+			}
+			this.e++;
+			this.i = 0;
+			getContext().become(createReceive()); // Exit election mode
+			print("Last Update: (" + this.e + ", " + this.i + ") = " + this.v);
 		}
 
 		void onWriteOkTimeout(Timeout msg) {
@@ -560,7 +588,7 @@ public class QuorumBasedTotalOrder {
 
 	/*-- Main
 	------------------------------------------------------------------*/
-	public static void main(String[] args) {
+	public static void main(String[] args) throws InterruptedException {
 
 		// Create the actor system
 		final ActorSystem system = ActorSystem.create("helloakka");
@@ -582,6 +610,8 @@ public class QuorumBasedTotalOrder {
 		// // Send the start messages to the coordinator
 		// coordinator.tell(start, null);
 		// group.get(1).tell(new IssueRead(), null);
+		group.get(2).tell(new IssueWrite(5), null);
+		Thread.sleep(20000);
 		group.get(2).tell(new IssueWrite(5), null);
 		// group.get(0).tell(new IssueWrite(3), null);
 		// group.get(0).tell(new IssueWrite(10), null);
