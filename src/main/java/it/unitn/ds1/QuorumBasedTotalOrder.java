@@ -147,7 +147,7 @@ public class QuorumBasedTotalOrder {
 	public static class ElectionResponse implements Serializable {
 	} // Sent from a replica to its predecessor. ACK for the ElectionRequest
 
-	public static class SynchronizationRequest implements Serializable {
+	public static class Synchronization implements Serializable {
 	} // Sent to the most updated replica to every other replica. Completes the
 		// election, updating the old replicas' v
 
@@ -435,7 +435,48 @@ public class QuorumBasedTotalOrder {
 				setElectionTimeout(500, next);
 			} else {
 				// TODO siccome il mio ultimo update e' gia' presente devo eleggere il coordinatore e propagare l'informazione, si potrebbe propagare anche la nuova topologia dell'anello (opzionale)
+				List<ActorRef> newParticipants = new ArrayList<>();
+				Pair<ActorRef, UpdateIdentifier> last = null;
+				int lastId = -1;
 
+				for (Map.Entry<Integer, Pair<ActorRef, UpdateIdentifier>> entry : el_msg.lastUpdateList.entrySet()) {
+					Integer key = entry.getKey();
+					Pair<ActorRef, UpdateIdentifier> value = entry.getValue();
+					// In this way they are already ordered by id
+					newParticipants.add(value.first());
+
+					if (last == null) {
+						last = value;
+						lastId = key;
+						continue;
+					}
+
+					if (value.second().e == last.second().e && value.second().i > last.second().i) {
+						last = value;
+						lastId = key;
+					} else if (value.second().e > last.second().e) {
+						last = value;
+						lastId = key;
+					} else if (value.second().e == last.second().e && value.second().i == last.second().i && key > lastId) {
+						last = value;
+						lastId = key;
+					}
+				}
+				// if i'm not the new coordinator just forward the Election message
+				if (!(this.id == lastId)) {
+					// TODO bisogna snellire il codice
+					ActorRef next = this.participants
+							.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
+					next.tell(el_msg, getSelf());
+					setElectionTimeout(500, next);
+				} else {
+					// TODO inviare un sincronization message a tutti i nodi attivi
+					print("SYNC (" + this.id + ")");
+					// Create a new partecipants list
+					this.participants = newParticipants;
+					this.coordinator = last.first();
+					multicast(new Synchronization());
+				}
 			}
 		}
 
@@ -460,6 +501,16 @@ public class QuorumBasedTotalOrder {
 			next.tell(el_msg, getSelf());
 			// TODO aggiungere un timeout che tiene traccia del nodo al quale abbiamo inviato il messaggio e in caso scatti lo rimuova dall'anello e reinvii Election msg
 			setElectionTimeout(500, next);
+
+		}
+
+		void onSynchronization(Synchronization msg) {
+			print("Sync recived by coordinator");
+			// TODO completare la sincronizzaizone
+			this.coordinator = getSender(); // Change coordinator ref
+			// Update partecipants
+			// Synchronize to last update
+			// Exit election mode
 
 		}
 
@@ -496,8 +547,8 @@ public class QuorumBasedTotalOrder {
 
 		public Receive electionMode() {
 			return receiveBuilder().match(ElectionRequest.class, this::onElectionRequest)
-					.match(ElectionResponse.class, this::onElectionResponse).match(ElectionTimeout.class, this::onElectionTimeout)
-					.matchAny(msg -> {
+					.match(ElectionResponse.class, this::onElectionResponse).match(Synchronization.class, this::onSynchronization)
+					.match(ElectionTimeout.class, this::onElectionTimeout).matchAny(msg -> {
 					}).build();
 		}
 
