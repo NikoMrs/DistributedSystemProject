@@ -141,7 +141,6 @@ public class QuorumBasedTotalOrder {
 	} // Sent from the coordinator to all replicas. Complete the update, modifying the value v
 
 	public static class ElectionRequest implements Serializable { // Sent from a replica to its successor. Initiate a coordinator election
-		// TODO: Aggiungere gli update noti da ogni nodo Dobbiamo anche aggiungere gli ID dei processi
 		public Map<Integer, Pair<ActorRef, UpdateIdentifier>> lastUpdateList = new TreeMap<>();
 	}
 
@@ -194,6 +193,7 @@ public class QuorumBasedTotalOrder {
 
 		protected ElectionRequest el_msg = null;
 		protected boolean election = false;
+		// TODO Se siamo in election mode (election = true) e riceviamo degli election inti, rispondiamo solo con un ACK, senza iniziare una nuova elezione
 
 		protected Random rnd = new Random();
 
@@ -349,6 +349,8 @@ public class QuorumBasedTotalOrder {
 		// First step of the update protocol, adding a step to the history + sends ACK
 		void onUpdateRequest(UpdateRequest msg) {
 			PendingUpdateTuple updateList = new PendingUpdateTuple(msg.update.v);
+			// TODO Prima di aggiungere, controllo che non sia già presente l'update.
+			// Necessario per gestire l'eventualità di ricevere un doppione durante il processo di synchronization
 			pendingUpdates.put(msg.update.identifier, updateList);
 
 			if (!(getSelf().equals(this.coordinator))) {
@@ -412,9 +414,9 @@ public class QuorumBasedTotalOrder {
 
 		void onHeartbeatTimeout(HeartbeatTimeout msg) {
 			print("coordinator crashed, starting new election...");
-			// TODO scrivo al primo nodo dell'anello e e poi lui contatta tutti gli altri membri in broadcast avvisando dell'inizio di una nuova elezione (timuovere l'if)
+			// TODO Rimuovere l'if
 			if (!electionStarted) {
-				// TODO bisogna ruimuovere questa variabile
+				// TODO bisogna rimuovere questa variabile
 				electionStarted = true;
 
 				if (!election) {
@@ -425,14 +427,15 @@ public class QuorumBasedTotalOrder {
 				el_msg = new ElectionRequest();
 				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
 				next.tell(el_msg, getSelf());
-				// TODO aggiungere un timeout che tiene traccia del nodo al quale abbiamo inviato il messaggio e in caso scatti lo rimuova dall'anello e reinvii Election msg
 				setElectionTimeout(500, next);
 			}
 
 		}
 
+		// TODO Aggiungere Election Init, inviato al primo nodo del ring. Fa partire un timeout. Se scade prima di ricevere un ACK, comunica con il nodo successivo (freccia 1)
+		// TODO Quando ricevo l'ACK dell'election Init (2), rimuovo il timeout prec e ne avvio un'altro. Se scade prima di ricevere un election msg (quindi non è stata avviata l'elezione), faccio partire una nuova elezione
+		// TODO Una volta ricevuto un election msg (3), resetto il timer sopra. Se scade prima di ricevere un synchronization msg (quindi è crashato il coordinator eletto), avvio una nuova elezione
 		void onElectionRequest(ElectionRequest msg) {// Sent from a replica to its successor. Initiate a coordinator election
-			// TODO: Aggiungere gli update noti da ogni nodo
 			// print(msg.lastUpdateList + "");
 			print("Election request recived");
 			if (!election) {
@@ -440,7 +443,6 @@ public class QuorumBasedTotalOrder {
 				election();
 			}
 			getSender().tell(new ElectionResponse(), getSelf());
-			// TODO bisogna mandare il messaggio di Election request anche al nodo successivo
 			el_msg = msg;
 			if (el_msg.lastUpdateList.get(this.id) == null) {
 				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
@@ -450,7 +452,6 @@ public class QuorumBasedTotalOrder {
 				next.tell(el_msg, getSelf());
 				setElectionTimeout(500, next);
 			} else {
-				// TODO siccome il mio ultimo update e' gia' presente devo eleggere il coordinatore e propagare l'informazione, si potrebbe propagare anche la nuova topologia dell'anello (opzionale)
 				List<ActorRef> newParticipants = new ArrayList<>();
 				Pair<ActorRef, UpdateIdentifier> last = null;
 				int lastId = -1;
@@ -481,19 +482,16 @@ public class QuorumBasedTotalOrder {
 				// if i'm not the new coordinator just forward the Election message
 				if (!(this.id == lastId)) {
 					// TODO bisogna snellire il codice
+					// TODO Faccio partire un timeout. In caso questo scada prima che venga ricevuto un synchronization msg, cioè se qualcosa è andato storto durante l'election (crash del nuovo coordinator), inizio nuovamente l'elezione
 					ActorRef next = this.participants
 							.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
 					next.tell(el_msg, getSelf());
 					setElectionTimeout(500, next);
 				} else {
-					// TODO inviare un sincronization message a tutti i nodi attivi
+					// TODO Una volta inviato il synchronization msg, attendo gli ACK. Ricevuti gli ACK, controllo se questi superano il quorum e in tal caso, invio un update request per ogni elemento nei pendingUpdates, seguito poi da un Writeok ciascuno. In questo modo ogni pendingUpdate viene completato da ogni replica
 					print("SYNC (" + this.id + ")");
 					// Create a new partecipants list
 					this.participants = newParticipants;
-					// this.coordinator = last.first();
-					// this.e++; // Incrementing the epoch
-					// this.i = 0; // Setting the update identifier to 0
-					print("Last Update: (" + this.e + ", " + this.i + ") = " + this.v);
 					multicast(new Synchronization(this.participants, this.completedUpdates));
 				}
 			}
@@ -509,7 +507,6 @@ public class QuorumBasedTotalOrder {
 		void onElectionTimeout(ElectionTimeout msg) {
 			this.participants.remove(msg.target);
 			print("REMOVED");
-			// TODO inviare un nuovo messaggio al nodo successivo visto che abbiamo rimosso quello in crash
 			print("ELECTION TIMEOUT");
 			ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
 			// If we don't have an election message we have to create a new one
@@ -518,7 +515,6 @@ public class QuorumBasedTotalOrder {
 				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
 			}
 			next.tell(el_msg, getSelf());
-			// TODO aggiungere un timeout che tiene traccia del nodo al quale abbiamo inviato il messaggio e in caso scatti lo rimuova dall'anello e reinvii Election msg
 			setElectionTimeout(500, next);
 
 		}
