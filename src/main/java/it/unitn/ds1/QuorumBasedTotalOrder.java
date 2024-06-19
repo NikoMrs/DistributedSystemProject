@@ -179,6 +179,12 @@ public class QuorumBasedTotalOrder {
 		}
 	}
 
+	public static class ElectionInit implements Serializable { // Used to contact the first active replica in the ring, asking to start the election process.
+	}
+
+	public static class ElectionInitAck implements Serializable {
+	}
+
 	/*-- Common functionality for both Coordinator and Replicas ------------*/
 
 	public static class Node extends AbstractActor {
@@ -349,8 +355,6 @@ public class QuorumBasedTotalOrder {
 		// First step of the update protocol, adding a step to the history + sends ACK
 		void onUpdateRequest(UpdateRequest msg) {
 			PendingUpdateTuple updateList = new PendingUpdateTuple(msg.update.v);
-			// TODO Prima di aggiungere, controllo che non sia già presente l'update.
-			// Necessario per gestire l'eventualità di ricevere un doppione durante il processo di synchronization
 			pendingUpdates.put(msg.update.identifier, updateList);
 
 			if (!(getSelf().equals(this.coordinator))) {
@@ -431,6 +435,11 @@ public class QuorumBasedTotalOrder {
 					election = true;
 					election();
 				}
+
+				// TODO effettuare l'election init se non siamo gia' in election mode (dobbiamo gestire l'anello per individuare il primo nodo disponibile)
+				// troviamo il primo nodo attivo dell'anello e cerchiamo di contattarlo con un electionInit.
+
+				// Start the ring election process (TO BE REMOVED)
 				ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
 				el_msg = new ElectionRequest();
 				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
@@ -448,6 +457,9 @@ public class QuorumBasedTotalOrder {
 		// coordinator eletto), avvio una nuova elezione
 		void onElectionRequest(ElectionRequest msg) {// Sent from a replica to its successor. Initiate a coordinator election
 			// print(msg.lastUpdateList + "");
+			// TODO cancello l'init timeout + ne avvio uno per il completamento della election (SYNC). se scade significa che il coordinatore e' crashato
+			// ulteriormente ed effettuo quindi un altro Init
+
 			print("Election request recived");
 			if (!election) {
 				election = true;
@@ -500,9 +512,6 @@ public class QuorumBasedTotalOrder {
 					next.tell(el_msg, getSelf());
 					setElectionTimeout(500, next);
 				} else {
-					// TODO Una volta inviato il synchronization msg, attendo gli ACK. Ricevuti gli ACK, controllo se questi superano il quorum e in tal caso, invio un
-					// update request per ogni elemento nei pendingUpdates, seguito poi da un Writeok ciascuno. In questo modo ogni pendingUpdate viene completato da ogni
-					// replica
 					print("SYNC (" + this.id + ")");
 					// Create a new partecipants list
 					this.participants = newParticipants;
@@ -545,8 +554,8 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void onSynchronization(Synchronization msg) {
+			// TODO cancellare il synchronization timeout
 			print("Sync recived by coordinator");
-			// TODO completare la sincronizzaizone
 			this.coordinator = getSender(); // Change coordinator ref
 			this.participants = msg.participants; // Update partecipants
 			this.completedUpdates = msg.completedUpdates; // Synchronize to last update
@@ -586,6 +595,18 @@ public class QuorumBasedTotalOrder {
 			System.out.format("%2d %s: %s\n", id, role, s);
 		}
 
+		void onElectionInit(ElectionInit msg) {
+			// risponde con un ack + enter election mode
+			// se sono gia' in election mode rispondo solo
+			// avvio la procedura di election
+		}
+
+		void onElectionInitAck(ElectionInitAck msg) {
+			// cancelliamo il timer per ElectionInit
+			// setto un ulteriore timer che aspetta l'arrivo di un election message (significa che l'election sta procedendo).
+			// se non arriva invio un'altro election init
+		}
+
 		@Override
 		public Receive createReceive() {
 			// Empty mapping: we'll define it in the inherited classes
@@ -593,8 +614,9 @@ public class QuorumBasedTotalOrder {
 					.match(IssueRead.class, this::onRead).match(HeartbeatMessage.class, this::onHeartbeatMessage)
 					.match(ElectionRequest.class, this::onElectionRequest).match(UpdateRequest.class, this::onUpdateRequest)
 					.match(UpdateResponse.class, this::onUpdateResponse).match(WriteOkRequest.class, this::onWriteOk)
-					.match(PreHeartbeatMessage.class, this::onPreHeartbeatMessage)
-					.match(HeartbeatTimeout.class, this::onHeartbeatTimeout).match(Timeout.class, this::onWriteOkTimeout).build();
+					.match(PreHeartbeatMessage.class, this::onPreHeartbeatMessage).match(ElectionInit.class, this::onElectionInit)
+					.match(ElectionInitAck.class, this::onElectionInitAck).match(HeartbeatTimeout.class, this::onHeartbeatTimeout)
+					.match(Timeout.class, this::onWriteOkTimeout).build();
 		}
 
 		public Receive crashed() {
