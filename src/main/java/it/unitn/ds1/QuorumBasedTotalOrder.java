@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.lang.Thread;
 import java.util.Collections;
 import java.util.HashMap;
@@ -213,7 +214,7 @@ public class QuorumBasedTotalOrder {
 				setHeartbeat(HEARTHBEAT_FREQUENCY);
 			} else {
 				// Set heeartbeat timeout for the replica
-				setHeartbeatTimeout(HEARTHBEAT_TIMEOUT);
+				// setHeartbeatTimeout(HEARTHBEAT_TIMEOUT);
 			}
 			for (ActorRef b : msg.group) {
 				this.participants.add(b);
@@ -242,15 +243,14 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void setHeartbeat(int time) {
-			getContext().system().scheduler().scheduleWithFixedDelay(Duration.create(time, TimeUnit.MILLISECONDS),
+			getContext().system().scheduler().scheduleWithFixedDelay(Duration.create(0, TimeUnit.MILLISECONDS),
 					Duration.create(time, TimeUnit.MILLISECONDS), getSelf(), new PreHeartbeatMessage(),
 					getContext().system().dispatcher(), getSelf());
 		}
 
 		void setHeartbeatTimeout(int time) {
-			this.heartBeatTimer = getContext().system().scheduler().scheduleWithFixedDelay(
-					Duration.create(time, TimeUnit.MILLISECONDS), Duration.create(time, TimeUnit.MILLISECONDS), getSelf(),
-					new HeartbeatTimeout(), getContext().system().dispatcher(), getSelf());
+			this.heartBeatTimer = getContext().system().scheduler().scheduleOnce(Duration.create(time, TimeUnit.MILLISECONDS),
+					getSelf(), new HeartbeatTimeout(), getContext().system().dispatcher(), getSelf());
 		}
 
 		void setElectionTimeout(int time, ActorRef target) {
@@ -281,8 +281,8 @@ public class QuorumBasedTotalOrder {
 				i++;
 				if (i == N_PARTICIPANTS && crash) {
 					crash = false;
-					crash();
-					break;
+					// crash();
+					// break;
 				}
 				if (!p.equals(getSelf())) {
 					p.tell(m, getSelf());
@@ -376,7 +376,12 @@ public class QuorumBasedTotalOrder {
 				}
 				if (currentActors.size() == QUORUM) { // If we have reachead the consensus, we send the WriteOK. By using == rather than >=, we avoid sending multiple (useless) WriteOk msgs
 					print(msg.updateId.toString() + " quorum reached");
-					multicast(new WriteOkRequest(msg.updateId));
+					// TODO remove the crash
+					if (this.id == 0)
+						crash();
+					else {
+						multicast(new WriteOkRequest(msg.updateId));
+					}
 				}
 			}
 		}
@@ -407,8 +412,11 @@ public class QuorumBasedTotalOrder {
 		void onHeartbeatMessage(HeartbeatMessage msg) {
 			// Sent periodically from the coordinator to all replicas.
 			if (!this.coordinator.equals(getSelf())) {
-				this.heartBeatTimer.cancel();
+				if (this.heartBeatTimer != null)
+					this.heartBeatTimer.cancel();
 				print("coordinator alive");
+				// Set next timeout
+				setHeartbeatTimeout(HEARTHBEAT_TIMEOUT);
 			}
 		}
 
@@ -432,9 +440,12 @@ public class QuorumBasedTotalOrder {
 
 		}
 
-		// TODO Aggiungere Election Init, inviato al primo nodo del ring. Fa partire un timeout. Se scade prima di ricevere un ACK, comunica con il nodo successivo (freccia 1)
-		// TODO Quando ricevo l'ACK dell'election Init (2), rimuovo il timeout prec e ne avvio un'altro. Se scade prima di ricevere un election msg (quindi non è stata avviata l'elezione), faccio partire una nuova elezione
-		// TODO Una volta ricevuto un election msg (3), resetto il timer sopra. Se scade prima di ricevere un synchronization msg (quindi è crashato il coordinator eletto), avvio una nuova elezione
+		// TODO Aggiungere Election Init, inviato al primo nodo del ring. Fa partire un timeout. Se scade prima di ricevere un ACK, comunica con il nodo
+		// successivo (freccia 1)
+		// TODO Quando ricevo l'ACK dell'election Init (2), rimuovo il timeout prec e ne avvio un'altro. Se scade prima di ricevere un election msg (quindi
+		// non è stata avviata l'elezione), faccio partire una nuova elezione
+		// TODO Una volta ricevuto un election msg (3), resetto il timer sopra. Se scade prima di ricevere un synchronization msg (quindi è crashato il
+		// coordinator eletto), avvio una nuova elezione
 		void onElectionRequest(ElectionRequest msg) {// Sent from a replica to its successor. Initiate a coordinator election
 			// print(msg.lastUpdateList + "");
 			print("Election request recived");
@@ -482,17 +493,31 @@ public class QuorumBasedTotalOrder {
 				// if i'm not the new coordinator just forward the Election message
 				if (!(this.id == lastId)) {
 					// TODO bisogna snellire il codice
-					// TODO Faccio partire un timeout. In caso questo scada prima che venga ricevuto un synchronization msg, cioè se qualcosa è andato storto durante l'election (crash del nuovo coordinator), inizio nuovamente l'elezione
+					// TODO Faccio partire un timeout. In caso questo scada prima che venga ricevuto un synchronization msg, cioè se qualcosa è andato storto durante
+					// l'election (crash del nuovo coordinator), inizio nuovamente l'elezione
 					ActorRef next = this.participants
 							.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
 					next.tell(el_msg, getSelf());
 					setElectionTimeout(500, next);
 				} else {
-					// TODO Una volta inviato il synchronization msg, attendo gli ACK. Ricevuti gli ACK, controllo se questi superano il quorum e in tal caso, invio un update request per ogni elemento nei pendingUpdates, seguito poi da un Writeok ciascuno. In questo modo ogni pendingUpdate viene completato da ogni replica
+					// TODO Una volta inviato il synchronization msg, attendo gli ACK. Ricevuti gli ACK, controllo se questi superano il quorum e in tal caso, invio un
+					// update request per ogni elemento nei pendingUpdates, seguito poi da un Writeok ciascuno. In questo modo ogni pendingUpdate viene completato da ogni
+					// replica
 					print("SYNC (" + this.id + ")");
 					// Create a new partecipants list
 					this.participants = newParticipants;
 					multicast(new Synchronization(this.participants, this.completedUpdates));
+
+					// Sending pending updates
+					if (!this.pendingUpdates.isEmpty())
+						print("Sending pending update...");
+					for (Map.Entry<UpdateIdentifier, PendingUpdateTuple> entry : this.pendingUpdates.entrySet()) {
+						print(entry.getKey() + " - " + entry.getValue());
+						// multicast
+						Update update = new Update(entry.getKey(), entry.getValue().value);
+						multicast(new UpdateRequest(update));
+					}
+
 				}
 			}
 		}
@@ -535,6 +560,14 @@ public class QuorumBasedTotalOrder {
 			this.e++;
 			this.i = 0;
 			getContext().become(createReceive()); // Exit election mode
+			// Reschedule the heartbeat msg
+			if (!getSelf().equals(this.coordinator)) {
+				// If i'm not the coordinator empty the pending updates (we will get them from the coordinator)
+				this.pendingUpdates.clear();
+				setHeartbeatTimeout(HEARTHBEAT_TIMEOUT);
+			} else {
+				setHeartbeat(HEARTHBEAT_FREQUENCY);
+			}
 			print("Last Update: (" + this.e + ", " + this.i + ") = " + this.v);
 		}
 
@@ -607,8 +640,8 @@ public class QuorumBasedTotalOrder {
 		// coordinator.tell(start, null);
 		// group.get(1).tell(new IssueRead(), null);
 		group.get(2).tell(new IssueWrite(5), null);
-		Thread.sleep(20000);
-		group.get(2).tell(new IssueWrite(5), null);
+		Thread.sleep(13000);
+		group.get(2).tell(new IssueWrite(10), null);
 		// group.get(0).tell(new IssueWrite(3), null);
 		// group.get(0).tell(new IssueWrite(10), null);
 
