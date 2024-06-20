@@ -438,6 +438,7 @@ public class QuorumBasedTotalOrder {
 
 			print("update " + msg.updateId.toString() + " completed, current value " + update.v);
 
+			// TODO modificare, da problemi
 			if (!this.election)
 				this.i = update.identifier.i;
 			this.v = update.v;
@@ -503,6 +504,9 @@ public class QuorumBasedTotalOrder {
 				this.electionStart.cancel();
 			if (this.initTimeout != null)
 				this.initTimeout.cancel();
+
+			// Set initstarter to true (prevent multiple elections)
+			this.initStarted = true;
 
 			print("Election request recived");
 			if (!election) {
@@ -619,6 +623,10 @@ public class QuorumBasedTotalOrder {
 
 		void onElectionCompletedTimeout(ElectionCompletedTimeout msg) {
 			// The election didn't complete, probably the new coordinator crashed, starting another election
+
+			// reset initStarted
+			this.initStarted = false;
+
 			ActorRef first = this.participants.get(0);
 			first.tell(new ElectionInit(), getSelf());
 			setElectioIninitTimeout(INIT_TIMEOUT, first);
@@ -633,6 +641,9 @@ public class QuorumBasedTotalOrder {
 			this.participants = msg.participants; // Update partecipants
 			this.completedUpdates = msg.completedUpdates; // Synchronize to last update
 
+			// reset initStarted
+			this.initStarted = false;
+
 			if (!msg.completedUpdates.isEmpty()) {
 				// There are completed updates
 				Update update = msg.completedUpdates.get(msg.completedUpdates.size());
@@ -641,7 +652,9 @@ public class QuorumBasedTotalOrder {
 			}
 			this.e++;
 			this.i = 0;
-			getContext().become(createReceive()); // Exit election mode
+			// Exit election mode
+			getContext().become(createReceive());
+
 			// Reschedule the heartbeat msg
 			if (!getSelf().equals(this.coordinator)) {
 				// If i'm not the coordinator empty the pending updates (we will get them from the coordinator)
@@ -670,6 +683,7 @@ public class QuorumBasedTotalOrder {
 
 		void onElectionInit(ElectionInit msg) {
 			// risponde con un ack + enter election mode
+			// TODO controllare che se sono gia' in election ....
 			if (!this.election) {
 				this.election = true;
 				election();
@@ -680,21 +694,22 @@ public class QuorumBasedTotalOrder {
 			// avvio la procedura di election
 
 			// TODO rimuovere l'if per togliere il crash
-			if (this.id == 1) {
-				crash();
-			} else {
-				// Start the ring election process
-				if (this.initStarted == false) {
-					print("STARTING ELECTION");
-					this.initStarted = true;
-					ActorRef next = this.participants
-							.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
-					el_msg = new ElectionRequest();
-					el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
-					next.tell(el_msg, getSelf());
-					setElectionTimeout(500, next);
-				}
+			// if (this.id == 1) {
+			// crash();
+			// } else {
+			// Start the ring election process
+			if (this.initStarted == false) {
+				print("STARTING ELECTION");
+				this.initStarted = true;
+				ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
+				el_msg = new ElectionRequest();
+				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
+				next.tell(el_msg, getSelf());
+				setElectionTimeout(500, next);
+				if (this.id == 1)
+					crash();
 			}
+			// }
 
 		}
 
