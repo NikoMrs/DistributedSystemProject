@@ -634,7 +634,7 @@ public class QuorumBasedTotalOrder {
 			// TODO cancellare il synchronization timeout (Scatta quando non dovrebbe)
 			if (this.electionCompleted != null)
 				this.electionCompleted.cancel();
-			print("Sync recived from the coordinator");
+			print("Sync recived from the new coordinator (" + this.coordination + ")");
 			this.coordinator = getSender(); // Change coordinator ref
 			this.participants = msg.participants; // Update partecipants
 			this.completedUpdates = msg.completedUpdates; // Synchronize to last update
@@ -666,6 +666,17 @@ public class QuorumBasedTotalOrder {
 
 		void onWriteOkTimeout(Timeout msg) {
 			print("Missing WriteOk, Coordinator crashed. Sending Election Init...");
+			electionStarted = true;
+
+			if (!election) {
+				election = true;
+				election();
+			}
+
+			// Try to contact the first active node of the ring and set a timout
+			ActorRef first = this.participants.get(0);
+			first.tell(new ElectionInit(), getSelf());
+			setElectioIninitTimeout(INIT_TIMEOUT, first);
 		}
 
 		// a simple logging function
