@@ -242,7 +242,7 @@ public class QuorumBasedTotalOrder {
 			for (ActorRef b : msg.group) {
 				this.participants.add(b);
 			}
-			print("starting with " + msg.group.size() + " peer(s)");
+			print("Starting with " + msg.group.size() + " peer(s)");
 		}
 
 		// emulate a crash and a recovery in a given time
@@ -254,7 +254,7 @@ public class QuorumBasedTotalOrder {
 		// enter the election state
 		void election() {
 			getContext().become(electionMode());
-			print("entering ELECTION mode");
+			print("Entering ELECTION mode");
 		}
 
 		// emulate a delay of d milliseconds
@@ -372,11 +372,11 @@ public class QuorumBasedTotalOrder {
 			if (getSelf().equals(coordinator)) { // If coordinator, forward the uupdate request
 				this.i++;
 				UpdateIdentifier identifier = new UpdateIdentifier(e, i);
-				print("write " + msg.value + " request recived");
+				print("Write " + msg.value + " request recived");
 				multicast(new UpdateRequest(new Update(identifier, msg.value)));
 
 			} else { // If replica, forward to the coordinator
-				print("redirecting write to coordinator");
+				print("Redirecting write " + msg.value + " to coordinator");
 				delay(DELAY_BOUND); // Simulating networtk delay
 				coordinator.tell(new IssueWrite(msg.value), getSender());
 				// TODO aggiungere e gestire un timeout in caso il coordinatore non inizi un update
@@ -396,7 +396,7 @@ public class QuorumBasedTotalOrder {
 				delay(DELAY_BOUND); // network delay
 			}
 
-			print("update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") sending ACK");
+			print("Update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") from " + getSender() + ". Sending ACK");
 
 			getSender().tell(new UpdateResponse(msg.update.identifier), getSelf());
 
@@ -411,14 +411,15 @@ public class QuorumBasedTotalOrder {
 				ArrayList<ActorRef> currentActors = pendingUpdates.get(msg.updateId).actors;
 				if (!currentActors.contains(getSender())) { // A node can't vote multiple times
 					currentActors.add(getSender());
-					print(msg.updateId.toString() + " current quorum = " + currentActors.size());
+					print("ACK for " + msg.updateId.toString() + " from " + getSender() + ", current quorum = " + currentActors.size());
 				}
 				if (currentActors.size() == QUORUM) { // If we have reachead the consensus, we send the WriteOK. By using == rather than >=, we avoid sending multiple (useless) WriteOk msgs
-					print(msg.updateId.toString() + " quorum reached");
+					print("Quorum reached for " + msg.updateId.toString());
 					// TODO remove the crash
 					if (this.id == 0)
 						crash();
 					else {
+						print("Sending WriteOKs...");
 						multicast(new WriteOkRequest(msg.updateId));
 					}
 				}
@@ -436,11 +437,10 @@ public class QuorumBasedTotalOrder {
 			completedUpdates.add(update);
 			pendingUpdates.remove(msg.updateId);
 
-			print("update " + msg.updateId.toString() + " completed, current value " + update.v);
+			print("WriteOk for " + msg.updateId.toString() + ". New value: " + update.v);
 
-			// TODO modificare, da problemi
-			if (!this.election)
-				this.i = update.identifier.i;
+			// After handle pendingUpdates of previous epoch, the future updates' i will takes in account these operation, possibly starting from a not 0 value
+			this.i = update.identifier.i;
 			this.v = update.v;
 		}
 
@@ -455,14 +455,14 @@ public class QuorumBasedTotalOrder {
 			if (!this.coordinator.equals(getSelf())) {
 				if (this.heartBeatTimer != null)
 					this.heartBeatTimer.cancel();
-				print("coordinator alive");
+				print("Received Heartbeat. Coordinator alive");
 				// Set next timeout
 				setHeartbeatTimeout(HEARTHBEAT_TIMEOUT);
 			}
 		}
 
 		void onHeartbeatTimeout(HeartbeatTimeout msg) {
-			print("coordinator crashed, election Init...");
+			print("Missing Heartbeat, Coordinator crashed. Sending Election Init...");
 			// TODO Rimuovere l'if
 			// if (!electionStarted) {
 			// TODO bisogna rimuovere questa variabile
@@ -508,7 +508,7 @@ public class QuorumBasedTotalOrder {
 			// Set initstarter to true (prevent multiple elections)
 			this.initStarted = true;
 
-			print("Election request recived");
+			print("Election request recived from " + getSender());
 			if (!election) {
 				election = true;
 				election();
@@ -563,14 +563,14 @@ public class QuorumBasedTotalOrder {
 					next.tell(el_msg, getSelf());
 					setElectionTimeout(500, next);
 				} else {
-					print("SYNC (" + this.id + ")");
+					print("New coordinator found (" + this.id + "). Sending Synchronization");
 					// Create a new partecipants list
 					this.participants = newParticipants;
 					multicast(new Synchronization(this.participants, this.completedUpdates));
 
 					// Sending pending updates
 					if (!this.pendingUpdates.isEmpty())
-						print("Sending pending update...");
+						print("Sending pending updates...");
 					for (Map.Entry<UpdateIdentifier, PendingUpdateTuple> entry : this.pendingUpdates.entrySet()) {
 						print(entry.getKey() + " - " + entry.getValue());
 						// multicast
@@ -583,15 +583,14 @@ public class QuorumBasedTotalOrder {
 
 		void onElectionResponse(ElectionResponse msg) {
 			// Sent from a replica to its predecessor. ACK for the ElectionRequest
-			print("ELECTION ACK RECIVED");
+			print("ElectionResponse ACK received from " + getSender());
 			// Ack arrived timeout cancelled
 			this.electionTimeout.cancel();
 		}
 
 		void onElectionTimeout(ElectionTimeout msg) {
 			this.participants.remove(msg.target);
-			print("ELECTION TIMEOUT");
-			print("REMOVED");
+			print("Election TIMEOUT. Removed " + msg.target + " from active nodes");
 			ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
 			// If we don't have an election message we have to create a new one
 			if (el_msg == null) {
@@ -605,8 +604,7 @@ public class QuorumBasedTotalOrder {
 
 		void onElectionInitTimeout(ElectioIninitTimeout msg) {
 			this.participants.remove(msg.target);
-			print("ELECTION INIT TIMEOUT");
-			print("REMOVED");
+			print("Election Init TIMEOUT. Removed " + msg.target + " from active nodes");
 			ActorRef first = this.participants.get(0);
 			// If we don't have an election message we have to create a new one
 			first.tell(new ElectionInit(), getSelf());
@@ -636,7 +634,7 @@ public class QuorumBasedTotalOrder {
 			// TODO cancellare il synchronization timeout (Scatta quando non dovrebbe)
 			if (this.electionCompleted != null)
 				this.electionCompleted.cancel();
-			print("Sync recived by coordinator");
+			print("Sync recived from the coordinator");
 			this.coordinator = getSender(); // Change coordinator ref
 			this.participants = msg.participants; // Update partecipants
 			this.completedUpdates = msg.completedUpdates; // Synchronize to last update
@@ -663,11 +661,11 @@ public class QuorumBasedTotalOrder {
 			} else {
 				setHeartbeat(HEARTHBEAT_FREQUENCY);
 			}
-			print("Last Update: (" + this.e + ", " + this.i + ") = " + this.v);
+			print("Current state: (" + this.e + ", " + this.i + ") = " + this.v);
 		}
 
 		void onWriteOkTimeout(Timeout msg) {
-			print("coordinator crashed on WriteOk, starting new election...");
+			print("Missing WriteOk, Coordinator crashed. Sending Election Init...");
 		}
 
 		// a simple logging function
@@ -699,7 +697,7 @@ public class QuorumBasedTotalOrder {
 			// } else {
 			// Start the ring election process
 			if (this.initStarted == false) {
-				print("STARTING ELECTION");
+				print("Starting a new Election");
 				this.initStarted = true;
 				ActorRef next = this.participants.get((this.participants.indexOf(getSelf()) + 1) % (this.participants.size()));
 				el_msg = new ElectionRequest();
@@ -708,6 +706,9 @@ public class QuorumBasedTotalOrder {
 				setElectionTimeout(500, next);
 				if (this.id == 1)
 					crash();
+			}
+			else {
+				print("Election already in progress. Sending ACK without starting a new one");
 			}
 			// }
 
