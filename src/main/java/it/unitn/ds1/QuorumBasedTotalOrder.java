@@ -352,7 +352,7 @@ public class QuorumBasedTotalOrder {
 				if (!p.equals(getSelf())) {
 					p.tell(m, getSelf());
 					// simulate network delays using sleep
-					delay(DELAY_BOUND);
+					delay(rnd.nextInt(DELAY_BOUND));
 				}
 			}
 
@@ -402,7 +402,7 @@ public class QuorumBasedTotalOrder {
 
 			} else { // If replica, forward to the coordinator
 				print("Redirecting write " + msg.value + " to coordinator");
-				delay(DELAY_BOUND); // Simulating networtk delay
+				delay(rnd.nextInt(DELAY_BOUND)); // Simulating networtk delay
 				coordinator.tell(new IssueWrite(msg.value), getSender());
 				// TODO aggiungere e gestire un timeout in caso il coordinatore non inizi un
 				// update
@@ -410,6 +410,7 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void onRead(IssueRead msg) {
+			delay(rnd.nextInt(DELAY_BOUND));
 			getSender().tell(v, getSelf());
 		}
 
@@ -419,7 +420,7 @@ public class QuorumBasedTotalOrder {
 			pendingUpdates.put(msg.update.identifier, updateList);
 
 			if (!(getSelf().equals(this.coordinator))) {
-				delay(DELAY_BOUND); // network delay
+				delay(rnd.nextInt(DELAY_BOUND)); // network delay
 			}
 
 			print("Update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") from " + getSender()
@@ -499,6 +500,7 @@ public class QuorumBasedTotalOrder {
 				election();
 
 				// Try to contact the first active node of the ring and set a timout
+				delay(rnd.nextInt(DELAY_BOUND));
 				getFirst().tell(new ElectionInit(), getSelf());
 				setElectioIninitTimeout(INIT_TIMEOUT, getFirst());
 			}
@@ -527,6 +529,7 @@ public class QuorumBasedTotalOrder {
 				election = true;
 				election();
 			}
+			delay(rnd.nextInt(DELAY_BOUND));
 			getSender().tell(new ElectionResponse(), getSelf());
 			el_msg = msg;
 			if (el_msg.lastUpdateList.get(this.id) == null) {
@@ -536,6 +539,7 @@ public class QuorumBasedTotalOrder {
 				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
 				// I need to find the next node in the link and send forward the election
 				// message
+				delay(rnd.nextInt(DELAY_BOUND));
 				getNext().tell(el_msg, getSelf());
 				setElectionTimeout(500, getNext());
 			} else {
@@ -568,6 +572,7 @@ public class QuorumBasedTotalOrder {
 				}
 				// if i'm not the new coordinator just forward the Election message
 				if (!(this.id == lastId)) {
+					delay(rnd.nextInt(DELAY_BOUND));
 					getNext().tell(el_msg, getSelf());
 					setElectionTimeout(500, getNext());
 				} else {
@@ -606,6 +611,7 @@ public class QuorumBasedTotalOrder {
 				el_msg = new ElectionRequest();
 				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
 			}
+			delay(rnd.nextInt(DELAY_BOUND));
 			getNext().tell(el_msg, getSelf());
 			setElectionTimeout(500, getNext());
 
@@ -616,12 +622,14 @@ public class QuorumBasedTotalOrder {
 			print("Election Init TIMEOUT. Removed " + msg.target + " from active nodes");
 
 			// If we don't have an election message we have to create a new one
+			delay(rnd.nextInt(DELAY_BOUND));
 			getFirst().tell(new ElectionInit(), getSelf());
 			setElectioIninitTimeout(INIT_TIMEOUT, getFirst());
 		}
 
 		void onElectionStartTimeout(ElectionStartTimeout msg) {
 			// The election is not started, the node that started the election (ElectionInit), crashed before starting the election, send another Election Init
+			delay(rnd.nextInt(DELAY_BOUND));
 			getFirst().tell(new ElectionInit(), getSelf());
 			setElectioIninitTimeout(INIT_TIMEOUT, getFirst());
 		}
@@ -630,6 +638,7 @@ public class QuorumBasedTotalOrder {
 			// The election didn't complete, probably the new coordinator crashed, starting another election reset initStarted
 			this.initStarted = false;
 
+			delay(rnd.nextInt(DELAY_BOUND));
 			getFirst().tell(new ElectionInit(), getSelf());
 			setElectioIninitTimeout(INIT_TIMEOUT, getFirst());
 		}
@@ -679,6 +688,7 @@ public class QuorumBasedTotalOrder {
 				election();
 
 				// Try to contact the first active node of the ring and set a timout
+				delay(rnd.nextInt(DELAY_BOUND));
 				getFirst().tell(new ElectionInit(), getSelf());
 				setElectioIninitTimeout(INIT_TIMEOUT, getFirst());
 			}
@@ -746,6 +756,7 @@ public class QuorumBasedTotalOrder {
 			}
 			// sending the ElectionInit ACK
 			print("Sending Election Init ACK...");
+			delay(rnd.nextInt(DELAY_BOUND));
 			getSender().tell(new ElectionInitAck(), getSelf());
 
 			// TODO rimuovere l'if per togliere il crash
@@ -760,6 +771,7 @@ public class QuorumBasedTotalOrder {
 
 				el_msg = new ElectionRequest();
 				el_msg.lastUpdateList.put(this.id, new Pair<>(getSelf(), new UpdateIdentifier(this.e, this.i)));
+				delay(rnd.nextInt(DELAY_BOUND));
 				getNext().tell(el_msg, getSelf());
 				setElectionTimeout(500, getNext());
 				if (this.id == 1)
