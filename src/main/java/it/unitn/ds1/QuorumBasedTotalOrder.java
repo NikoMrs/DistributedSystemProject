@@ -24,9 +24,24 @@ import java.lang.Thread;
 import java.util.Collections;
 import java.util.HashMap;
 import java.io.IOException;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+import java.io.File;
+import java.io.FileWriter;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
 // import java.time.Duration;
 
 public class QuorumBasedTotalOrder {
+
+	// Log Configuration
+	final static String LOG_DIRECTORY = "./logs/";
+	public static String log_filename;
 
 	// General Configuration
 	final static int N_PARTICIPANTS = 5;
@@ -672,6 +687,11 @@ public class QuorumBasedTotalOrder {
 
 		// a simple logging function
 		void print(String s) {
+			print(s, false);
+		}
+
+		void print(String s, boolean printToFile) {
+
 			String role;
 			if (getSelf().equals(coordinator)) {
 				role = "Coordinator";
@@ -679,6 +699,43 @@ public class QuorumBasedTotalOrder {
 				role = "Replica";
 			}
 			System.out.format("%2d %s: %s\n", id, role, s);
+
+			if (printToFile)
+				printOnFile(s);
+
+		}
+
+		void printOnFile(String s) {
+
+			String role;
+			if (getSelf().equals(coordinator)) {
+				role = "Coordinator";
+			} else {
+				role = "Replica";
+			}
+
+			String myString = String.format("%2d %s: %s\n", id, role, s);
+
+			String log_path = LOG_DIRECTORY + log_filename;
+
+			try {
+				Path path = Paths.get(log_path);
+				Files.createDirectories(path.getParent());
+
+				File logFile = new File(log_path);
+				if (logFile.createNewFile()) {
+					System.out.println("File created: " + logFile.getName());
+				}
+
+				FileWriter myWriter = new FileWriter(log_path, true);
+				myWriter.write(myString);
+				myWriter.close();
+
+			} catch (IOException e) {
+				System.out.println("An error occurred during file write.");
+				e.printStackTrace();
+			}
+
 		}
 
 		void onElectionInit(ElectionInit msg) {
@@ -758,6 +815,11 @@ public class QuorumBasedTotalOrder {
 	/*-- Main
 	------------------------------------------------------------------*/
 	public static void main(String[] args) throws InterruptedException {
+
+		// Create the name for the log file
+		DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH-mm-ss");
+		String formattedDateTime = LocalDateTime.now().format(formatter);
+		log_filename = formattedDateTime + ".log";
 
 		// Create the actor system
 		final ActorSystem system = ActorSystem.create("helloakka");
