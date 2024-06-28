@@ -440,9 +440,9 @@ public class QuorumBasedTotalOrder {
 			}
 
 			// TODO controllare gli eventuali delay
-			if (!(getSelf().equals(this.coordinator))) {
-				delay(rnd.nextInt(DELAY_BOUND)); // network delay
-			}
+			// if (!(getSelf().equals(this.coordinator))) {
+			// delay(rnd.nextInt(DELAY_BOUND)); // network delay
+			// }
 
 			print("Update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") from " + getSender()
 					+ ". Sending ACK");
