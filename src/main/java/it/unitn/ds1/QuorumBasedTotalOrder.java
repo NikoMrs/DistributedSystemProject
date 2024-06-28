@@ -6,6 +6,7 @@ import akka.actor.ActorSystem;
 import akka.actor.Cancellable;
 import akka.actor.Props;
 import akka.japi.Pair;
+import scala.Array;
 import scala.concurrent.duration.Duration;
 
 import java.io.Serializable;
@@ -101,6 +102,7 @@ public class QuorumBasedTotalOrder {
 	final static int DELAY_BOUND = 200;
 	final static int INIT_TIMEOUT = 2000;
 	final static int SYNC_TIMEOUT = 20000;
+	final static int ISSUE_TIMEOUT = 20000;
 	static boolean crash = true;
 
 	// Messages Configuration
@@ -120,6 +122,9 @@ public class QuorumBasedTotalOrder {
 		};
 	}
 
+	public static class IssueWriteTimeout implements Serializable {
+	}
+
 	public static class IssueRead implements Serializable {
 	} // Sent from a client to a replica. Asks for a Read operation
 
@@ -134,9 +139,11 @@ public class QuorumBasedTotalOrder {
 
 	public static class UpdateRequest implements Serializable { // Sent from the coordinator to all replicas. Initiate the update protocol
 		public final Update update;
+		public final ActorRef caller;
 
-		UpdateRequest(Update update) {
+		UpdateRequest(Update update, ActorRef caller) {
 			this.update = update;
+			this.caller = caller;
 		};
 	}
 
@@ -226,6 +233,7 @@ public class QuorumBasedTotalOrder {
 		protected ActorRef coordinator; // current ID of the coordinator node
 		protected int e = 0, i = 0; // latest valid values for epoch and update ID
 		protected Cancellable heartBeatTimer, electionTimeout, initTimeout, electionStart, electionCompleted;
+		protected ArrayList<Cancellable> forwardingTimeoutList = new ArrayList<Cancellable>();
 		protected Map<UpdateIdentifier, Cancellable> writeOkTimeout = new HashMap<UpdateIdentifier, Cancellable>();
 		protected boolean initStarted = false;
 
@@ -394,18 +402,23 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void onWrite(IssueWrite msg) {
-			if (getSelf().equals(coordinator)) { // If coordinator, forward the uupdate request
+			if (getSelf().equals(coordinator)) { // If coordinator, forward the update request
 				this.i++;
 				UpdateIdentifier identifier = new UpdateIdentifier(e, i);
+				UpdateRequest uReq;
+				if (getSender() == null)
+					uReq = new UpdateRequest(new Update(identifier, msg.value), getSelf());
+				else
+					uReq = new UpdateRequest(new Update(identifier, msg.value), getSender());
 				print("Write " + msg.value + " request recived");
-				multicast(new UpdateRequest(new Update(identifier, msg.value)));
+				multicast(uReq);
 
 			} else { // If replica, forward to the coordinator
 				print("Redirecting write " + msg.value + " to coordinator");
 				delay(rnd.nextInt(DELAY_BOUND)); // Simulating networtk delay
-				coordinator.tell(new IssueWrite(msg.value), getSender());
-				// TODO aggiungere e gestire un timeout in caso il coordinatore non inizi un
-				// update
+				coordinator.tell(new IssueWrite(msg.value), getSelf());
+				// TODO aggiungere e gestire un timeout in caso il coordinatore non inizi un update
+				this.forwardingTimeoutList.add(setTimeout(ISSUE_TIMEOUT));
 			}
 		}
 
@@ -419,6 +432,14 @@ public class QuorumBasedTotalOrder {
 			PendingUpdateTuple updateList = new PendingUpdateTuple(msg.update.v);
 			pendingUpdates.put(msg.update.identifier, updateList);
 
+			// TODO If I've forwarded the write, cancel the timeout
+			if (getSelf().equals(msg.caller) && this.forwardingTimeoutList.size() != 0) {
+				print("Issue Delay removed");
+				this.forwardingTimeoutList.get(0).cancel();
+				this.forwardingTimeoutList.remove(0);
+			}
+
+			// TODO controllare gli eventuali delay
 			if (!(getSelf().equals(this.coordinator))) {
 				delay(rnd.nextInt(DELAY_BOUND)); // network delay
 			}
@@ -589,7 +610,7 @@ public class QuorumBasedTotalOrder {
 						print(entry.getKey() + " - " + entry.getValue());
 						// multicast
 						Update update = new Update(entry.getKey(), entry.getValue().value);
-						multicast(new UpdateRequest(update));
+						multicast(new UpdateRequest(update, getSelf()));
 					}
 				}
 			}
