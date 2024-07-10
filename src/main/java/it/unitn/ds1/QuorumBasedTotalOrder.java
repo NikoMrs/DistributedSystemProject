@@ -245,7 +245,7 @@ public class QuorumBasedTotalOrder {
 			for (ActorRef b : msg.group) {
 				this.participants.add(b);
 			}
-			print("Starting with " + msg.group.size() + " peer(s)");
+			print("Starting with " + msg.group.size() + " peer(s)", true);
 		}
 
 		ActorRef getNext() { // Used to get the next node in the ring
@@ -258,7 +258,7 @@ public class QuorumBasedTotalOrder {
 
 		void crash() { // Emulates a crash and a recovery in a given time
 			getContext().become(crashed());
-			print("CRASH!!!");
+			print("CRASH!!!", true);
 		}
 
 		void election() { // Used to enter in the election mode
@@ -353,11 +353,11 @@ public class QuorumBasedTotalOrder {
 				else
 					uReq = new UpdateRequest(new Update(identifier, msg.value), getSender());
 
-				print("Write " + msg.value + " request recived");
+				print("Write " + msg.value + " request recived", true);
 				multicast(uReq);
 
 			} else { // If replica, forward the request to the coordinator
-				print("Redirecting write " + msg.value + " to coordinator");
+				print("Redirecting write " + msg.value + " to coordinator", true);
 
 				delay(rnd.nextInt(DELAY_BOUND)); // Simulating networtk delay
 
@@ -369,7 +369,7 @@ public class QuorumBasedTotalOrder {
 		void onRead(IssueRead msg) { // Read request handler
 			delay(rnd.nextInt(DELAY_BOUND));
 			getSender().tell(v, getSelf());
-			print("Value " + v + " read from the replica");
+			print("Value " + v + " read from the replica", true);
 		}
 
 		void onUpdateRequest(UpdateRequest msg) { // First step of the update protocol, adding a step to the history + sends ACK
@@ -384,7 +384,7 @@ public class QuorumBasedTotalOrder {
 			}
 
 			print("Update request (" + msg.update.identifier.e + ", " + msg.update.identifier.i + ") from " + getSender()
-					+ ". Sending ACK");
+					+ ". Sending ACK", true);
 
 			getSender().tell(new UpdateResponse(msg.update.identifier), getSelf()); // Send ACK
 
@@ -398,11 +398,11 @@ public class QuorumBasedTotalOrder {
 				if (!currentActors.contains(getSender())) { // A node can't vote multiple times
 					currentActors.add(getSender());
 					print("ACK for " + msg.updateId.toString() + " from " + getSender() + ", current quorum = "
-							+ currentActors.size());
+							+ currentActors.size(), true);
 				}
 
 				if (currentActors.size() == QUORUM) { // If we have reachead the consensus, we send the WriteOK. By using == rather than >=, we avoid sending multiple (useless) WriteOk msgs
-					print("Quorum reached for " + msg.updateId.toString());
+					print("Quorum reached for " + msg.updateId.toString(), true);
 					// TODO CRASH
 					if (this.id == 0)
 						crash();
@@ -425,7 +425,7 @@ public class QuorumBasedTotalOrder {
 			completedUpdates.add(update);
 			pendingUpdates.remove(msg.updateId);
 
-			print("WriteOk for " + msg.updateId.toString() + ". New value: " + update.v);
+			print("WriteOk for " + msg.updateId.toString() + ". New value: " + update.v, true);
 
 			// After handling pendingUpdates of previous epoch through a Synchronization, the future updates' i will takes in account these operation, possibly
 			// starting from a not 0 value
@@ -451,7 +451,7 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void onHeartbeatTimeout(HeartbeatTimeout msg) { // Handle expired Heartbeat Timeouts
-			print("Missing Heartbeat, Coordinator crashed. Sending Election Init...");
+			print("Missing Heartbeat, Coordinator crashed. Sending Election Init...", true);
 
 			// If we are not in election mode, enter it and start a new election phase
 			if (!election) {
@@ -475,7 +475,7 @@ public class QuorumBasedTotalOrder {
 			// Set initStarted to true to prevent multiple elections at the same time
 			this.initStarted = true;
 
-			print("Election request recived from " + getSender());
+			print("Election request recived from " + getSender(), true);
 			// If we are not in election mode, enter it and start a new election phase
 			if (!election) {
 				election = true;
@@ -530,7 +530,7 @@ public class QuorumBasedTotalOrder {
 					getNext().tell(el_msg, getSelf());
 					setElectionTimeout(ELECTION_TIMEOUT, getNext());
 				} else { // If i'm the new coordinator, manage the synchronization procedure
-					print("New coordinator found (" + this.id + "). Sending Synchronization");
+					print("New coordinator found (" + this.id + "). Sending Synchronization", true);
 
 					this.participants = newParticipants; // Create a new partecipants list
 					this.coordinator = getSelf(); // Set myself as the coordinator
@@ -538,7 +538,7 @@ public class QuorumBasedTotalOrder {
 
 					// Handle the pendingUpdates (if needed)
 					if (!this.pendingUpdates.isEmpty())
-						print("Sending pending updates...");
+						print("Sending pending updates...", true);
 					for (Map.Entry<UpdateIdentifier, PendingUpdateTuple> entry : this.pendingUpdates.entrySet()) {
 						print(entry.getKey() + " - " + entry.getValue());
 						Update update = new Update(entry.getKey(), entry.getValue().value);
@@ -555,7 +555,7 @@ public class QuorumBasedTotalOrder {
 
 		void onElectionTimeout(ElectionTimeout msg) { // Handle expired Election Timeout
 			this.participants.remove(msg.target); // The node isn't responding, so it must have crashed
-			print("Election TIMEOUT. Removed " + msg.target + " from active nodes");
+			print("Election TIMEOUT. Removed " + msg.target + " from active nodes", true);
 
 			// If we don't have an election message we have to create a new one
 			if (el_msg == null) {
@@ -570,7 +570,7 @@ public class QuorumBasedTotalOrder {
 
 		void onElectionInitTimeout(ElectioIninitTimeout msg) { // Handle expired Election Init Timeout
 			this.participants.remove(msg.target); // The node isn't responding, so it must have crashed
-			print("Election Init TIMEOUT. Removed " + msg.target + " from active nodes");
+			print("Election Init TIMEOUT. Removed " + msg.target + " from active nodes", true);
 
 			// If we don't have an election message we have to create a new one
 			delay(rnd.nextInt(DELAY_BOUND));
@@ -579,6 +579,8 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void onElectionStartTimeout(ElectionStartTimeout msg) { // Handle expired Election Start Timeout
+			print("Election Start TIMEOUT", true);
+
 			// The election is not started, the node that started the election (by sending the ElectionInit), crashed before starting the election
 			// We send another Election Init
 			delay(rnd.nextInt(DELAY_BOUND));
@@ -587,6 +589,8 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void onElectionCompletedTimeout(ElectionCompletedTimeout msg) { // Handle expired Election Complete Timeout
+			print("Election Completed TIMEOUT", true);
+
 			// The election didn't complete, probably the new coordinator crashed
 			// We send another Election Init
 			this.initStarted = false; // Reset the initStarted variable
@@ -601,7 +605,7 @@ public class QuorumBasedTotalOrder {
 			if (this.electionCompletedTimeout != null)
 				this.electionCompletedTimeout.cancel();
 
-			print("Sync recived from the new coordinator (" + this.coordinator + ")");
+			print("Sync recived from the new coordinator (" + this.coordinator + ")", true);
 			this.coordinator = getSender(); // Update the coordinator
 			this.participants = msg.participants; // Update partecipants
 			this.completedUpdates = msg.completedUpdates; // Synchronize to last update
@@ -633,7 +637,7 @@ public class QuorumBasedTotalOrder {
 		}
 
 		void onWriteOkTimeout(Timeout msg) { // Handle expired WriteOk Timeout
-			print("Missing WriteOk, Coordinator crashed. Sending Election Init...");
+			print("Missing WriteOk, Coordinator crashed. Sending Election Init...", true);
 
 			// If we are not in election mode, enter it and start a new election phase
 			if (!election) {
@@ -714,7 +718,7 @@ public class QuorumBasedTotalOrder {
 
 			// If the election hasn't started, start a new one
 			if (this.initStarted == false) {
-				print("Starting a new Election");
+				print("Starting a new Election", true);
 				this.initStarted = true;
 
 				el_msg = new ElectionRequest();
@@ -725,7 +729,7 @@ public class QuorumBasedTotalOrder {
 				if (this.id == 1)
 					crash();
 			} else {
-				print("Election already in progress. Sending ACK without starting a new one");
+				print("Election already in progress. Sending ACK without starting a new one", true);
 			}
 			// }
 
@@ -777,6 +781,25 @@ public class QuorumBasedTotalOrder {
 		String formattedDateTime = LocalDateTime.now().format(formatter);
 		log_filename = formattedDateTime + ".log";
 
+		String log_path = LOG_DIRECTORY + log_filename;
+		try {
+			Path path = Paths.get(log_path);
+			Files.createDirectories(path.getParent());
+
+			File logFile = new File(log_path);
+			if (logFile.createNewFile()) {
+				System.out.println("File created: " + logFile.getName());
+			}
+
+			FileWriter myWriter = new FileWriter(log_path, true);
+			myWriter.write("Distributed Systems Project - Mores Nicola & Roccon Marco\n\n");
+			myWriter.close();
+
+		} catch (IOException e) {
+			System.out.println("An error occurred during file write.");
+			e.printStackTrace();
+		}
+
 		// Create the actor system
 		final ActorSystem system = ActorSystem.create("helloakka");
 
@@ -800,6 +823,7 @@ public class QuorumBasedTotalOrder {
 		group.get(2).tell(new IssueWrite(10), null);
 		// group.get(0).tell(new IssueWrite(3), null);
 		// group.get(0).tell(new IssueWrite(10), null);
+		group.get(2).tell(new IssueRead(), null);
 
 		try {
 			System.out.println(">>> Press ENTER to exit <<<");
