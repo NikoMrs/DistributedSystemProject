@@ -368,7 +368,6 @@ public class QuorumBasedTotalOrder {
 
 		void onRead(IssueRead msg) { // Read request handler
 			delay(rnd.nextInt(DELAY_BOUND));
-			getSender().tell(v, getSelf());
 			print("Value " + v + " read from the replica", true);
 		}
 
